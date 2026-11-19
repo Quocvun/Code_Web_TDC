@@ -22,7 +22,7 @@ type StoredAttempt = {
   candidateDetails: Record<string, string>; attemptNo: number; questionIds: string[]; status: "in_progress" | "submitted" | "expired";
   startedAt: string; deadlineAt: string; lastSeenAt: string; submittedAt?: string; answers: Record<string, StoredAnswer>;
   integrityEvents: IntegrityEvent[]; strictIntegrity: boolean; fullscreenUsed: boolean; isFocused: boolean; isFullscreen: boolean; integrityAutoSubmitted: boolean;
-  submissionReason?: "student" | "time-limit" | "integrity-threshold"; score?: number; objectiveScore?: number; totalPoints?: number; scoreReleased?: boolean;
+  submissionReason?: "student" | "time-limit" | "integrity-threshold" | "fullscreen-exit"; score?: number; objectiveScore?: number; totalPoints?: number; scoreReleased?: boolean;
   scoreReleasedAt?: string; manualScores?: Record<string, number>; manualFeedback?: Record<string, string>; tokenHash: string;
 };
 type RuntimeStore = { exams: StoredExam[]; attempts: StoredAttempt[]; passwordFailures?: Array<[string, { count: number; expiresAt: number }]> };
@@ -226,6 +226,7 @@ export class ExamRuntimeService {
     if (exam.audience === "class" && (!user.className || user.className !== exam.className)) throw new ForbiddenException("Tài khoản này không thuộc lớp được giao đề.");
     if (exam.audience === "student" && (!user.studentCode || !exam.targetStudentCodes.some((code) => code.toLowerCase() === user.studentCode?.toLowerCase()))) throw new ForbiddenException("MSSV này không nằm trong danh sách được giao đề.");
     if (exam.audience === "public" && user.authProvider !== "google") throw new ForbiddenException("Đề mở yêu cầu tài khoản Google đã xác minh.");
+    if (body.fullscreenUsed !== true) throw new ConflictException("Phải bật toàn màn hình trước khi bắt đầu bài thi.");
     const now = Date.now();
     if (exam.opensAt && now < Date.parse(exam.opensAt)) throw new ConflictException("Đề chưa đến giờ mở.");
     if (now >= Date.parse(exam.dueAt)) throw new ConflictException("Đề đã đóng và không nhận lượt thi mới.");
@@ -303,7 +304,12 @@ export class ExamRuntimeService {
     await this.ensureLoaded();
     const attempt = this.studentAttempt(user, id, body.token);
     if (attempt.status === "in_progress" && Date.now() >= Date.parse(attempt.deadlineAt)) { const exam = this.exams.get(attempt.examId); if (exam) this.finish(attempt, exam, "time-limit"); }
-    if (attempt.status === "in_progress") { attempt.lastSeenAt = new Date().toISOString(); attempt.isFocused = body.isFocused !== false; attempt.isFullscreen = body.isFullscreen === true; }
+    if (attempt.status === "in_progress" && body.isFullscreen !== true) {
+      const at = new Date().toISOString();
+      if (!attempt.integrityEvents.some((event) => event.kind === "fullscreen-exit" && Date.parse(event.at) >= Date.parse(at) - 2500)) attempt.integrityEvents.push({ kind: "fullscreen-exit", at });
+      const exam = this.exams.get(attempt.examId);
+      if (exam) this.finish(attempt, exam, "fullscreen-exit");
+    } else if (attempt.status === "in_progress") { attempt.lastSeenAt = new Date().toISOString(); attempt.isFocused = body.isFocused !== false; attempt.isFullscreen = true; }
     await this.persist();
     return { ok: true, status: attempt.status, deadlineAt: attempt.deadlineAt, strikeCount: countStrikes(attempt.integrityEvents) };
   }
@@ -322,7 +328,8 @@ export class ExamRuntimeService {
     if (["copy-attempt", "cut-attempt", "paste-attempt", "print-attempt"].includes(kind) && last?.kind === kind && now.getTime() - Date.parse(last.at) < 1200) return { status: attempt.status, strikeCount: countStrikes(attempt.integrityEvents) };
     attempt.integrityEvents.push({ kind, at: now.toISOString(), clientAt: typeof body.clientAt === "string" ? body.clientAt.slice(0, 40) : undefined });
     attempt.lastSeenAt = now.toISOString();
-    if (attempt.strictIntegrity && countStrikes(attempt.integrityEvents) >= 3) this.finish(attempt, this.exams.get(attempt.examId)!, "integrity-threshold");
+    if (kind === "fullscreen-exit") this.finish(attempt, this.exams.get(attempt.examId)!, "fullscreen-exit");
+    else if (attempt.strictIntegrity && countStrikes(attempt.integrityEvents) >= 3) this.finish(attempt, this.exams.get(attempt.examId)!, "integrity-threshold");
     await this.persist();
     return { status: attempt.status, strikeCount: countStrikes(attempt.integrityEvents) };
   }
@@ -333,12 +340,20 @@ export class ExamRuntimeService {
     const attempt = this.studentAttempt(user, id, body.token);
     const exam = this.exams.get(attempt.examId)!;
     const expired = attempt.status === "in_progress" && Date.now() >= Date.parse(attempt.deadlineAt);
+    const requestedReason = body.reason === "fullscreen-exit"
+      ? "fullscreen-exit"
+      : body.reason === "integrity-threshold" && attempt.strictIntegrity && countStrikes(attempt.integrityEvents) >= 3
+        ? "integrity-threshold"
+        : "student";
     if (attempt.status === "in_progress" && !expired && body.answers && typeof body.answers === "object" && !Array.isArray(body.answers)) {
       const answers = body.answers as Record<string, unknown>;
       for (const qid of attempt.questionIds) if (qid in answers) attempt.answers[qid] = { value: this.answerValue(answers[qid]), sequence: Number.MAX_SAFE_INTEGER, savedAt: new Date().toISOString() };
     }
     if (attempt.status === "in_progress") {
-      this.finish(attempt, exam, expired ? "time-limit" : "student");
+      if (requestedReason === "fullscreen-exit" && !attempt.integrityEvents.some((event) => event.kind === "fullscreen-exit")) {
+        attempt.integrityEvents.push({ kind: "fullscreen-exit", at: new Date().toISOString() });
+      }
+      this.finish(attempt, exam, expired ? "time-limit" : requestedReason);
       await this.persist();
     }
     return { attempt: this.publicAttempt(attempt, false, this.scoreIsReleased(exam, attempt)) };
@@ -443,7 +458,7 @@ export class ExamRuntimeService {
     throw new BadRequestException("Câu trả lời không hợp lệ hoặc vượt giới hạn.");
   }
 
-  private finish(attempt: StoredAttempt, exam: StoredExam, reason: "student" | "time-limit" | "integrity-threshold") {
+  private finish(attempt: StoredAttempt, exam: StoredExam, reason: "student" | "time-limit" | "integrity-threshold" | "fullscreen-exit") {
     if (attempt.status !== "in_progress") return;
     const selected = new Set(attempt.questionIds);
     const questions = exam.questions.filter((question) => selected.has(question.id));
@@ -453,7 +468,7 @@ export class ExamRuntimeService {
     attempt.status = reason === "time-limit" ? "expired" : "submitted";
     attempt.submittedAt = new Date().toISOString();
     attempt.submissionReason = reason;
-    attempt.integrityAutoSubmitted = reason === "integrity-threshold";
+    attempt.integrityAutoSubmitted = reason === "integrity-threshold" || reason === "fullscreen-exit";
   }
 
   private scoreIsReleased(exam: StoredExam, attempt: StoredAttempt) {

@@ -730,7 +730,9 @@
 @media(prefers-reduced-motion:reduce){.major-catalog-card,.major-art-cube,.major-resource-list>a{transition:none}.major-catalog-card:hover,.major-catalog-card:hover .major-art-cube,.major-resource-list>a:hover{transform:none}}
 
 /* Exam session: clear progress, visible integrity state, and responsive answer controls. */
-.exam-taking-shell{max-width:1220px;padding-bottom:28px}
+.exam-taking-shell{position:relative;max-width:1220px;padding-bottom:28px}
+.exam-watermark{position:fixed;inset:0;z-index:25;display:flex;flex-wrap:wrap;align-content:space-around;justify-content:space-around;gap:8vh 4vw;padding:5vh 2vw;overflow:hidden;pointer-events:none;opacity:.12;color:#26345b;font-size:clamp(12px,1.05vw,16px);font-weight:750;letter-spacing:.055em;transform:rotate(-18deg) scale(1.15);mix-blend-mode:multiply}
+.exam-watermark span{min-width:28%;text-align:center;white-space:nowrap}
 .exam-taking-header{gap:14px;margin-bottom:16px}
 .exam-session-label{display:inline-flex;align-items:center;gap:9px;color:#596078;font-size:11px;font-weight:750;letter-spacing:.2px}
 .exam-live-dot{width:9px;height:9px;border-radius:50%;background:#34b58c;box-shadow:0 0 0 5px #34b58c18}
@@ -866,6 +868,7 @@
 .strict-mode .exam-question-card h2,.strict-mode .exam-question-card .question-number-row,.strict-mode .answer-option span{user-select:none}
 @media print{
   .exam-taking-shell{display:none!important}
+  body:has(.exam-taking-shell)::after{content:"NỘI DUNG BÀI THI ĐƯỢC BẢO VỆ · KHÔNG IN / XUẤT PDF";position:fixed;inset:0;z-index:99999;display:grid;place-items:center;padding:40px;background:#000;color:#fff;font:700 20pt/1.5 Arial,sans-serif;text-align:center}
 }.integrity-table-badge.unknown{border-color:#e8e8ef;background:#f8f8fb;color:#878b9b}
 .integrity-review-panel.unknown{border-color:#e8e8ef;background:linear-gradient(120deg,#f8f8fb,#fff)}
 .integrity-review-panel.unknown .integrity-review-icon{background:#f0f0f4;color:#7f8496}

@@ -29,12 +29,12 @@
 | POST | `/exams/:examId/unpublish` | Chủ sở hữu đề/nhà trường/quản trị thu hồi đề |
 | GET | `/exam-attempts/live` | Giảng viên/nhà trường/quản trị xem phiên gần đây và tín hiệu giám sát, không có câu trả lời của sinh viên |
 | GET | `/exam-attempts` | Sinh viên xem lượt đã nộp của mình; giảng viên xem lượt của đề mình sở hữu |
-| POST | `/exam-attempts/start` | Sinh viên đủ điều kiện bắt đầu/tiếp tục; máy chủ chọn câu, cấp token và hạn nộp |
+| POST | `/exam-attempts/start` | Sinh viên đủ điều kiện và gửi `fullscreenUsed: true`; máy chủ chọn câu, cấp token và hạn nộp |
 | GET | `/exam-attempts/:attemptId` | Sinh viên sở hữu hoặc giảng viên được quyền xem lượt; sinh viên gửi token qua `x-meotdc-attempt-token` |
 | POST | `/exam-attempts/:attemptId/answers` | Lưu câu trả lời theo thứ tự phiên bản tăng dần |
-| POST | `/exam-attempts/:attemptId/heartbeat` | Cập nhật lần hoạt động, trạng thái tab/toàn màn hình; máy chủ kiểm tra hạn |
-| POST | `/exam-attempts/:attemptId/integrity-events` | Nhận tín hiệu trình duyệt được phép và đóng dấu thời gian phía máy chủ |
-| POST | `/exam-attempts/:attemptId/submit` | Nộp bài; máy chủ chấm câu khách quan và áp dụng hạn làm bài |
+| POST | `/exam-attempts/:attemptId/heartbeat` | Cập nhật trạng thái tab/toàn màn hình; máy chủ tự chốt lượt nếu heartbeat báo đã thoát toàn màn hình |
+| POST | `/exam-attempts/:attemptId/integrity-events` | Nhận tín hiệu trình duyệt; `fullscreen-exit` tự kết thúc lượt ngay |
+| POST | `/exam-attempts/:attemptId/submit` | Nộp bài; máy chủ chấm khách quan, áp dụng hạn và ghi lý do tự nộp |
 | POST | `/exam-attempts/:attemptId/grade` | Giảng viên sở hữu đề/nhà trường/quản trị chấm tự luận, ghi nhận xét và có thể công bố điểm |
 | POST | `/assignments/submission-files` | Sinh viên tải tệp bài tập (tối đa 10 MB, kiểm chữ ký nội dung; S3-compatible nếu cấu hình) |
 | GET | `/assignments/submission-files/:fileId` | Chủ tệp hoặc giảng viên tải tệp (phân quyền phạm vi lớp hiện ở mức demo) |
@@ -45,9 +45,9 @@ Next.js proxy chuyển `/api/*` tới `NEXT_PUBLIC_API_BASE_URL` (mặc định 
 
 ## Cách API bảo vệ lượt thi
 
-- Khi bắt đầu, máy chủ kiểm tra vai trò, lớp/MSSV hoặc đối tượng đề mở, lịch xuất bản, mật khẩu, số lượt và lượt đang hoạt động. Mật khẩu đề được băm bằng scrypt; nhập sai quá năm lần sẽ bị khóa tạm cho từng sinh viên/đề.
+- Khi bắt đầu, máy chủ kiểm tra vai trò, lớp/MSSV hoặc đối tượng đề mở, lịch xuất bản, mật khẩu, số lượt, lượt đang hoạt động và cờ `fullscreenUsed`. Mật khẩu đề được băm bằng scrypt; nhập sai quá năm lần sẽ bị khóa tạm cho từng sinh viên/đề.
 - Đáp án chuẩn nằm trong kho API; bản trả về cho sinh viên để trống trường đáp án. Đáp án, MSSV mục tiêu và mật khẩu đề cũng được loại khỏi dữ liệu đề lưu ở trình duyệt. API của giảng viên vẫn trả đáp án cho đúng chủ sở hữu đề.
-- Câu trả lời tự lưu vào API; IndexedDB giữ hàng đợi khi mất mạng và tự gửi lại khi kết nối trở lại. Máy chủ quản lý đồng hồ/hạn nộp, câu hỏi đã rút, điểm khách quan và chính sách công bố điểm. Nếu nộp quá giờ, API chốt bài mà không nhận câu trả lời mới. Tự luận chờ giảng viên chấm.
+- Câu trả lời tự lưu vào API; IndexedDB giữ hàng đợi khi mất mạng và tự gửi lại khi kết nối trở lại. Toàn màn hình là điều kiện bắt đầu mọi lượt; thoát toàn màn hình tự nộp ngay, heartbeat là kiểm tra dự phòng phía máy chủ. Chế độ nghiêm ngặt hạn chế sao chép/dán/in/phím tắt do trình duyệt quản lý và tự nộp sau ba đợt cảnh báo khác; không thể chặn chắc chắn phím tắt hoặc công cụ do hệ điều hành xử lý. Máy chủ quản lý đồng hồ/hạn nộp, câu hỏi đã rút, điểm khách quan và chính sách công bố điểm. Nếu nộp quá giờ, API chốt bài mà không nhận câu trả lời mới. Tự luận chờ giảng viên chấm.
 - Token lượt thi ngẫu nhiên được trả cho thí sinh một lần; máy chủ chỉ lưu SHA-256 của token. Trình duyệt lưu token để hỗ trợ tiếp tục lượt thi local, vì vậy vẫn có rủi ro nếu trình duyệt bị cài mã độc/XSS.
 - Bảng giám sát hiển thị heartbeat gần nhất, sự kiện trình duyệt gửi lên và số đợt cảnh báo. Chế độ nghiêm ngặt tự nộp sau ba đợt tính được; đây là tín hiệu để giảng viên xem xét, không phải kết luận gian lận.
 
@@ -55,7 +55,7 @@ Next.js proxy chuyển `/api/*` tới `NEXT_PUBLIC_API_BASE_URL` (mặc định 
 
 PostgreSQL hiện giữ một snapshot JSONB của đề/lượt thi và khóa toàn bộ các thao tác runtime bằng advisory lock để tránh ghi đè khi có nhiều API instance. Đây là bước bền vững và nhất quán cho demo/pilot nhỏ; nó tuần tự hóa heartbeat, lưu đáp án và dashboard, nên chưa phù hợp tải thi đồng thời lớn. Các bảng quan hệ trong `001_init.sql` là mô hình dữ liệu chuẩn bị, chưa phải kho dùng trực tiếp cho luồng runtime. Cần chuyển kho lượt thi sang repository quan hệ theo attempt/answer và đo tải trước kỳ thi đông người.
 
-Tín hiệu rời tab/toàn màn hình/sao chép do trình duyệt báo lên nên có thể bị giả, bị chặn hoặc không ghi nhận; API không phát hiện thiết bị thứ hai, không xác minh người ngồi trước máy, không ngăn hỗ trợ ở cấp hệ điều hành. Không dùng riêng tín hiệu này để kỷ luật sinh viên. Dữ liệu cần chính sách lưu/xóa, sao lưu mã hóa và diễn tập phục hồi do TDC phê duyệt. Phân quyền xem tệp hiện còn ở vai trò, chưa đối chiếu chính thức với lớp học phần.
+Tín hiệu rời tab/toàn màn hình/sao chép do trình duyệt báo lên nên có thể bị giả, bị chặn hoặc không ghi nhận. Website không thể phát hiện hoặc chặn chắc chắn ảnh chụp màn hình của hệ điều hành, điện thoại/máy ảnh bên ngoài, thiết bị thứ hai hay hỗ trợ ở cấp hệ điều hành. Watermark tên/MSSV hỗ trợ truy xuất ảnh bị chia sẻ; lệnh in/xuất PDF hiển thị trang đen, nhưng không chặn screenshot. Không dùng riêng nhật ký để kết luận gian lận hoặc kỷ luật. Dữ liệu cần chính sách lưu/xóa, sao lưu mã hóa và diễn tập phục hồi do TDC phê duyệt. Phân quyền xem tệp hiện còn ở vai trò, chưa đối chiếu chính thức với lớp học phần.
 
 ## Quy ước an toàn khác
 
