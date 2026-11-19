@@ -23,7 +23,7 @@ Các alias `.localhost` bên dưới trỏ về loopback và chỉ dùng trên m
 
 Các tên này trỏ về `127.0.0.1`; chúng là địa chỉ demo nội bộ, không phải tên miền Internet. Tất cả mở cùng ứng dụng và dùng tài khoản theo vai trò.
 
-Không có `DATABASE_URL`, `pnpm dev` dùng bộ nhớ để trình diễn. Nếu có `.env` chứa `DATABASE_URL`, API tự chạy migrations và lưu đề/lượt thi, bài tập/bài nộp, roster, phiên và rate limit trong PostgreSQL.
+Không có `DATABASE_URL`, `pnpm dev` dùng bộ nhớ để trình diễn. Nếu có `.env` chứa `DATABASE_URL`, API tự chạy migrations và lưu đề/lượt thi, bài tập/bài nộp, khóa học/tiến độ học, roster, phiên và rate limit trong PostgreSQL. Danh mục lớp được dựng từ roster và nội dung đã giao; TDC vẫn cần cấp nguồn học kỳ, lớp học phần, ghi danh và SSO để thay dữ liệu thử bằng dữ liệu chính thức.
 
 ### Chạy stack PostgreSQL và MinIO
 

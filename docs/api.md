@@ -1,6 +1,6 @@
 # API MeoTDC
 
-Đường dẫn gốc `/api/v1`. Khi có `DATABASE_URL`, migrations chạy lúc khởi động; trạng thái đề/lượt thi, bài tập/bài nộp, roster, phiên, rate limit và metadata tệp được lưu trong PostgreSQL. Khi không cấu hình DB, API giữ chế độ demo trong bộ nhớ. Lớp/học phần và khóa học vẫn chưa đồng bộ với danh mục chính thức TDC.
+Đường dẫn gốc `/api/v1`. Khi có `DATABASE_URL`, migrations chạy lúc khởi động; trạng thái đề/lượt thi, bài tập/bài nộp, khóa học/tiến độ học, roster, phiên, rate limit và metadata tệp được lưu trong PostgreSQL. Khi không cấu hình DB, API giữ chế độ demo trong bộ nhớ. Lớp/học phần, roster và khóa học chưa đồng bộ với danh mục/SSO/ghi danh chính thức TDC.
 
 ## Endpoint hiện có
 
@@ -8,12 +8,16 @@
 |---|---|---|
 | GET | `/health` | Trạng thái API, PostgreSQL/local JSON và kho tệp |
 | GET | `/catalog/majors` | Danh mục demo 37 ngành |
+| GET | `/catalog/classes` | Danh sách lớp suy ra từ roster, khóa học, bài tập và đề; sinh viên chỉ thấy lớp của mình, giảng viên bị giới hạn theo mapping lớp trong production |
 | GET | `/auth/demo-accounts` | Tên tài khoản demo, không trả mật khẩu |
 | POST | `/auth/login` | Đăng nhập demo, trả cookie phiên HttpOnly |
 | POST | `/auth/google-login` | Xác minh ID token, nonce, audience, issuer, thời hạn và email đã xác minh |
 | GET | `/auth/me` | Phiên hiện tại hoặc `user: null` |
 | POST | `/auth/logout` | Thu hồi phiên phía máy chủ và xóa cookie |
 | GET/POST | `/auth/roster-accounts` | Nhà trường/quản trị xem và cấp tài khoản roster; PostgreSQL khi bật DB |
+| GET | `/courses` | Sinh viên chỉ xem khóa học theo lớp; giảng viên chỉ xem khóa mình sở hữu trong phạm vi lớp được gán; nhà trường/quản trị xem danh sách |
+| POST | `/courses` | Giảng viên tạo/cập nhật nội dung khóa học; quyền lớp được kiểm tra theo `MEOTDC_TEACHER_CLASS_ASSIGNMENTS` trong production |
+| POST | `/courses/:courseId/progress` | Sinh viên đánh dấu một bài đã hoàn thành; máy chủ xác thực bài trong khóa và tự tính phần trăm tiến độ |
 | GET | `/overview` | Tổng quan theo dữ liệu người dùng được phép xem |
 | GET | `/assignments` | Sinh viên xem bài của lớp và bài nộp của mình; giảng viên xem bài của mình cùng bài nộp |
 | POST | `/assignments` | Giảng viên/nhà trường/quản trị tạo bài tập nháp hoặc giao cho lớp |
@@ -35,7 +39,7 @@
 | POST | `/assignments/submission-files` | Sinh viên tải tệp bài tập (tối đa 10 MB, kiểm chữ ký nội dung; S3-compatible nếu cấu hình) |
 | GET | `/assignments/submission-files/:fileId` | Chủ tệp hoặc giảng viên tải tệp (phân quyền phạm vi lớp hiện ở mức demo) |
 
-Migration `003_learning_assignments.sql` tạo bảng quan hệ bài tập và bài nộp. Quyền giảng viên hiện giới hạn theo chủ sở hữu bài tập; phân quyền theo lớp chính thức cần roster/ghi danh TDC.
+Migrations `003_learning_assignments.sql` và `004_learning_courses.sql` tạo bảng quan hệ cho bài tập/bài nộp và khóa học/tiến độ. Khóa học được giới hạn theo tài khoản sở hữu và mã lớp được gán; quyền này chưa thay thế đồng bộ ghi danh chính thức TDC.
 
 Next.js proxy chuyển `/api/*` tới `NEXT_PUBLIC_API_BASE_URL` (mặc định `http://localhost:4000`).
 

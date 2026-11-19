@@ -1,6 +1,6 @@
 # Mô hình dữ liệu
 
-Schema nền nằm tại `apps/api/database/001_init.sql`; migrations ứng dụng đang dùng nằm tại `apps/api/database/002_runtime_persistence.sql` và `003_learning_assignments.sql`. `001` mô hình hóa bảng nghiệp vụ chuẩn của trường. Runtime hiện dùng PostgreSQL khi cấu hình `DATABASE_URL`, nhưng giữ đề/lượt thi trong một snapshot JSONB có advisory lock; bài tập/bài nộp đã dùng bảng quan hệ riêng.
+Schema nền nằm tại `apps/api/database/001_init.sql`; migrations ứng dụng đang dùng nằm tại `apps/api/database/002_runtime_persistence.sql`, `003_learning_assignments.sql` và `004_learning_courses.sql`. `001` mô hình hóa bảng nghiệp vụ chuẩn của trường. Runtime hiện dùng PostgreSQL khi cấu hình `DATABASE_URL`, nhưng giữ đề/lượt thi trong một snapshot JSONB có advisory lock; bài tập/bài nộp và khóa học/tiến độ học đã dùng bảng riêng.
 
 ## Nhóm bảng
 
@@ -16,6 +16,7 @@ Schema nền nằm tại `apps/api/database/001_init.sql`; migrations ứng dụ
 | Tài khoản/phiên hiện hành | `meotdc_roster_accounts`, `meotdc_sessions` | Roster demo/pilot và phiên đăng nhập; session chỉ lưu hash cookie |
 | Tệp hiện hành | `meotdc_submission_files` | Metadata file; nội dung nằm trong S3-compatible storage hoặc local demo |
 | Bài tập hiện hành | `meotdc_learning_assignments`, `meotdc_learning_submissions` | Bài tập theo lớp, bài nộp, điểm, phản hồi và trạng thái yêu cầu sửa |
+| Khóa học hiện hành | `meotdc_learning_courses`, `meotdc_learning_course_progress` | Nội dung khóa theo lớp và tiến độ hoàn thành riêng của từng sinh viên |
 
 ## Quy tắc dữ liệu
 

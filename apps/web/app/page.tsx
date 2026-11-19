@@ -45,7 +45,7 @@ type LiveExamAttempt = { id: string; examId: string; studentName: string; studen
 type ServerExamSession = { attemptId: string; attemptToken: string; startedAt: string; deadlineAt: string; strikeCount: number; questions: ExamQuestion[]; answers: Record<string, string | string[]>; integrityEvents: ExamIntegrityEvent[] };
 type QueuedExamAnswer = { key: string; userId: string; attemptId: string; token: string; questionId: string; sequence: number; answer: string | string[]; queuedAt: number };
 type DemoClass = { id: string; code: string; name: string; major: string; course: string; teacher: string; students: string[]; studentCodes?: Record<string, string>; studentEmails?: Record<string, string> };
-type DemoCourse = { id: string; title: string; code: string; className: string; progress: number; chapters: { title: string; lessons: { title: string; duration: string; content?: string }[] }[] };
+type DemoCourse = { id: string; title: string; code: string; className: string; progress: number; completedLessons?: string[]; serverBacked?: boolean; chapters: { title: string; lessons: { title: string; duration: string; content?: string }[] }[] };
 type UserRole = "student" | "teacher" | "school" | "admin";
 type MeoUser = { id: string; username: string; fullName: string; role: UserRole; email?: string; authProvider?: "google"; major?: string; majorGroup?: string; studentCode?: string; className?: string };
 type DemoAccount = Pick<MeoUser, "id" | "username" | "fullName" | "role" | "major">;
@@ -262,6 +262,12 @@ function mergeExamLists(local: Exam[], remote: Exam[]) {
   const exams = new Map(local.filter((exam) => !exam.serverBacked).map((exam) => [exam.id, exam]));
   remote.forEach((exam) => exams.set(exam.id, { ...(exams.get(exam.id) || {}), ...exam, accessPassword: undefined }));
   return [...exams.values()];
+}
+
+function mergeCourseLists(local: DemoCourse[], remote: DemoCourse[]) {
+  const courses = new Map(local.map((course) => [course.id, course]));
+  remote.forEach((course) => courses.set(course.id, { ...(courses.get(course.id) || {}), ...course, serverBacked: true }));
+  return [...courses.values()];
 }
 
 function canShowExamScore(exam: Exam | undefined, attempt: DemoAttempt) {
@@ -581,6 +587,7 @@ function TeacherWorkspace({ user, majors, onLogout }: { user: MeoUser; majors: M
   const [connected, setConnected] = useState(false);
   const [modal, setModal] = useState<"exam" | "import" | "assignment" | null>(null);
   const [assignments, setAssignments] = useState<DemoAssignment[]>(demoMode ? seedAssignments : []);
+  const [courses, setCourses] = useState<DemoCourse[]>(demoMode ? seedCourses : []);
   const [submissions, setSubmissions] = useState<DemoSubmission[]>([]);
   const [attempts, setAttempts] = useState<DemoAttempt[]>([]);
   const [classes, setClasses] = useState<DemoClass[]>(demoMode ? seedClasses : []);
@@ -596,17 +603,19 @@ function TeacherWorkspace({ user, majors, onLogout }: { user: MeoUser; majors: M
     const localAttempts = readDemoData<DemoAttempt[]>("attempts", []);
     setExams(localExams);
     setAssignments(localAssignments);
+    setCourses(readDemoData("courses", seedCourses));
     setSubmissions(localSubmissions);
     setAttempts(localAttempts);
-    setClasses(readDemoData("classes", seedClasses));
+    setClasses(demoMode ? readDemoData("classes", seedClasses) : []);
     if (!readDemoData<Exam[] | null>("exams", null)) writeDemoData("exams", localExams);
     if (!readDemoData<DemoAssignment[] | null>("assignments", null)) writeDemoData("assignments", localAssignments);
     const refreshLocalData = () => {
       setExams(readDemoData("exams", seedDemoExams()));
       setAssignments(readDemoData("assignments", seedAssignments));
+      setCourses(readDemoData("courses", seedCourses));
       setSubmissions(readDemoData("submissions", seedSubmissions));
       setAttempts(readDemoData("attempts", []));
-      setClasses(readDemoData("classes", seedClasses));
+      setClasses(demoMode ? readDemoData("classes", seedClasses) : []);
     };
     window.addEventListener(demoStorageEvent, refreshLocalData);
     fetch("/api/v1/health").then((response) => {
@@ -627,7 +636,7 @@ function TeacherWorkspace({ user, majors, onLogout }: { user: MeoUser; majors: M
     let alive = true;
     const refreshServerData = async () => {
       try {
-        const [examResponse, attemptResponse, assignmentResponse] = await Promise.all([fetch("/api/v1/exams"), fetch("/api/v1/exam-attempts"), fetch("/api/v1/assignments")]);
+        const [examResponse, attemptResponse, assignmentResponse, courseResponse, classResponse] = await Promise.all([fetch("/api/v1/exams"), fetch("/api/v1/exam-attempts"), fetch("/api/v1/assignments"), fetch("/api/v1/courses"), fetch("/api/v1/catalog/classes")]);
         if (!alive) return;
         if (examResponse.ok) {
           const remote = await examResponse.json() as Exam[];
@@ -642,6 +651,14 @@ function TeacherWorkspace({ user, majors, onLogout }: { user: MeoUser; majors: M
           setAssignments(remote.assignments);
           setSubmissions(remote.submissions);
         }
+        if (courseResponse.ok) {
+          const remoteCourses = await courseResponse.json() as DemoCourse[];
+          setCourses(demoMode ? mergeCourseLists(readDemoData("courses", seedCourses), remoteCourses) : remoteCourses);
+        }
+        if (classResponse.ok) {
+          const remoteClasses = await classResponse.json() as DemoClass[];
+          setClasses(demoMode ? readDemoData("classes", seedClasses) : remoteClasses);
+        }
       } catch { /* Keep local demo data visible when the API is unavailable. */ }
     };
     void refreshServerData();
@@ -650,6 +667,18 @@ function TeacherWorkspace({ user, majors, onLogout }: { user: MeoUser; majors: M
   }, []);
 
   const filteredExams = useMemo(() => exams.filter((exam) => `${exam.title} ${exam.course} ${exam.className}`.toLowerCase().includes(query.toLowerCase())), [exams, query]);
+
+  async function saveCourse(course: DemoCourse) {
+    const response = await fetch("/api/v1/courses", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(course) });
+    const payload = await response.json();
+    if (!response.ok || !payload.course) throw new Error(typeof payload.message === "string" ? payload.message : "Không lưu được khóa học lên máy chủ.");
+    const saved = payload.course as DemoCourse;
+    setCourses((current) => {
+      const next = [...current.filter((item) => item.id !== saved.id), saved];
+      if (demoMode) writeDemoData("courses", next);
+      return next;
+    });
+  }
 
   async function createExam(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -851,8 +880,8 @@ function TeacherWorkspace({ user, majors, onLogout }: { user: MeoUser; majors: M
           {active === "Tổng quan" && <Dashboard user={user} exams={filteredExams} classes={classes} onCreate={() => setModal("exam")} onImport={() => setModal("import")} onSeeAll={() => setActive("Bài kiểm tra")} query={query} setQuery={setQuery} assignments={assignments} submissions={submissions} attempts={attempts} />}
           {active === "Bài kiểm tra" && <ExamPage exams={filteredExams} query={query} setQuery={setQuery} onCreate={() => setModal("exam")} onImport={() => setModal("import")} onPublish={(examId) => { void setExamPublished(examId, true); }} onUnpublish={(examId) => { void setExamPublished(examId, false); }} />}
           {active === "Bài tập" && <AssignmentPage assignments={assignments} submissions={submissions} onCreate={() => setModal("assignment")} onGrade={gradeSubmission} />}
-          {active === "Lớp học" && <ClassesPage majors={majors} />}
-          {active === "Khóa học" && <CoursesPage />}
+          {active === "Lớp học" && <ClassesPage majors={majors} initialClasses={classes} />}
+          {active === "Khóa học" && <CoursesPage courses={courses} onSave={saveCourse} />}
           {active === "Ngân hàng câu hỏi" && <QuestionBankPage onImport={() => setModal("import")} />}
           {active === "Báo cáo" && <ReportsPage exams={exams} attempts={attempts} submissions={submissions} assignments={assignments} onGradeAttempt={gradeExamAttempt} />}
         </div>
@@ -867,7 +896,7 @@ function TeacherWorkspace({ user, majors, onLogout }: { user: MeoUser; majors: M
 }
 
 function ProductionReadinessNotice() {
-  return <aside className="production-readiness-notice" role="note"><strong>Phiên bản triển khai giới hạn</strong><span>Đề thi và lượt làm đã dùng API; roster chưa đồng bộ với hệ thống chính thức của trường, còn lớp, bài tập, khóa học và ngân hàng câu hỏi là chức năng demo. Không nhập dữ liệu sinh viên thật trước khi TDC nghiệm thu tích hợp, phân quyền và quy trình bảo vệ dữ liệu.</span></aside>;
+  return <aside className="production-readiness-notice" role="note"><strong>Phiên bản triển khai giới hạn</strong><span>Đề thi, lượt thi, bài tập, roster và khóa học đã có API; khi bật PostgreSQL, dữ liệu được lưu trên máy chủ. Lớp hiện được suy ra từ roster và nội dung đã giao, chưa có quản lý học kỳ/ghi danh chính thức; ngân hàng câu hỏi vẫn là dữ liệu demo. Không nhập dữ liệu thật trước khi trường nghiệm thu SSO, ghi danh, phân quyền và quy trình bảo vệ dữ liệu.</span></aside>;
 }
 
 function PublicLanding({ majors, onLogin, onRegister }: { majors: Major[]; onLogin: () => void; onRegister: () => void }) {
@@ -1151,7 +1180,7 @@ function StudentWorkspace({ user, majors, onLogout }: { user: MeoUser; majors: M
     let alive = true;
     const refreshServerData = async () => {
       try {
-        const [examResponse, attemptResponse, assignmentResponse] = await Promise.all([fetch("/api/v1/exams"), fetch("/api/v1/exam-attempts"), fetch("/api/v1/assignments")]);
+        const [examResponse, attemptResponse, assignmentResponse, courseResponse] = await Promise.all([fetch("/api/v1/exams"), fetch("/api/v1/exam-attempts"), fetch("/api/v1/assignments"), fetch("/api/v1/courses")]);
         const remoteExams = examResponse.ok ? await examResponse.json() as Exam[] : [];
         const remoteAttempts = attemptResponse.ok ? await attemptResponse.json() as DemoAttempt[] : [];
         if (!alive) return;
@@ -1164,6 +1193,10 @@ function StudentWorkspace({ user, majors, onLogout }: { user: MeoUser; majors: M
           const remote = await assignmentResponse.json() as LearningData;
           setAssignments(remote.assignments);
           setSubmissions(remote.submissions);
+        }
+        if (courseResponse.ok) {
+          const remoteCourses = await courseResponse.json() as DemoCourse[];
+          setCourses(demoMode ? mergeCourseLists(readDemoData("courses", seedCourses), remoteCourses) : remoteCourses);
         }
       } catch { /* Keep the latest local state if the API is temporarily unavailable. */ }
     };
@@ -1510,11 +1543,26 @@ function StudentWorkspace({ user, majors, onLogout }: { user: MeoUser; majors: M
     }
   }
 
-  function markLessonDone(courseId: string, chapterIndex: number, lessonIndex: number) {
+  async function markLessonDone(courseId: string, chapterIndex: number, lessonIndex: number) {
     const key = `meotdc:lessons:${user.id}:${courseId}`;
-    const done = readDemoData<string[]>(key, []);
     const lessonId = `${chapterIndex}-${lessonIndex}`;
+    const course = courses.find((item) => item.id === courseId);
+    if (!course) return;
+    const done = course.completedLessons || readDemoData<string[]>(key, []);
     if (done.includes(lessonId)) return;
+    if (course.serverBacked) {
+      try {
+        const response = await fetch(`/api/v1/courses/${encodeURIComponent(courseId)}/progress`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ chapterIndex, lessonIndex }) });
+        const payload = await response.json();
+        if (!response.ok || !Array.isArray(payload.completedLessons)) throw new Error(typeof payload.message === "string" ? payload.message : "Không lưu được tiến độ lên máy chủ.");
+        setCourses((current) => current.map((item) => item.id === courseId ? { ...item, progress: Number(payload.progress) || 0, completedLessons: payload.completedLessons as string[] } : item));
+        setNotice("Đã lưu tiến độ học lên máy chủ.");
+        return;
+      } catch (error) {
+        setNotice(error instanceof Error ? error.message : "Không lưu được tiến độ học.");
+        return;
+      }
+    }
     writeDemoData(key, [...done, lessonId]);
     const nextCourses = courses.map((course) => course.id === courseId ? { ...course, progress: Math.min(100, course.progress + 8) } : course);
     setCourses(nextCourses);
@@ -1611,10 +1659,10 @@ function StudentExamView({ exam, answers, secondsLeft, integrityEvents, strikeCo
   </div>;
 }
 
-function StudentCourseCard({ course, userId, onDone }: { course: DemoCourse; userId: string; onDone: (courseId: string, chapterIndex: number, lessonIndex: number) => void }) {
+function StudentCourseCard({ course, userId, onDone }: { course: DemoCourse; userId: string; onDone: (courseId: string, chapterIndex: number, lessonIndex: number) => Promise<void> | void }) {
   const [open, setOpen] = useState(false);
   const [openLesson, setOpenLesson] = useState<string | null>(null);
-  const completed = readDemoData<string[]>(`lessons:${userId}:${course.id}`, []);
+  const completed = course.completedLessons || readDemoData<string[]>(`lessons:${userId}:${course.id}`, []);
   return <section className="role-panel student-course-card"><button className="student-course-heading" onClick={() => setOpen((value) => !value)}><span className="task-icon task-purple"><Icon name="book"/></span><span><strong>{course.title}</strong><small>{course.code} · {course.className}</small></span><span className="student-course-progress">{course.progress}%</span><Icon name="chevron" size={18}/></button><div className="progress-track"><i style={{width:`${course.progress}%`}}/></div>{open && <div className="course-chapters">{course.chapters.map((chapter, chapterIndex) => <div className="course-chapter" key={chapter.title}><strong>{chapter.title}</strong>{chapter.lessons.map((lesson, lessonIndex) => { const id = `${chapterIndex}-${lessonIndex}`; const done = completed.includes(id); return <div className="course-lesson-wrap" key={lesson.title}><div className="course-lesson"><span className={`lesson-check ${done ? "done" : ""}`}>{done ? "✓" : "○"}</span><span><strong>{lesson.title}</strong><small>{lesson.duration} · Bài học</small></span><button className="button button-secondary" onClick={() => setOpenLesson(openLesson === id ? null : id)}>{openLesson === id ? "Thu gọn" : "Mở bài"}</button></div>{openLesson === id && <div className="lesson-content"><p>{lesson.content || "Giảng viên chưa thêm nội dung cho bài học này."}</p><button className="button button-primary" disabled={done} onClick={() => onDone(course.id, chapterIndex, lessonIndex)}>{done ? "Đã hoàn thành" : "Đánh dấu hoàn thành"}</button></div>}</div>; })}</div>)}</div>}</section>;
 }
 
@@ -1693,23 +1741,28 @@ function InstitutionWorkspace({ user, majors, accounts, onLogout }: { user: MeoU
   const [credentialNotice, setCredentialNotice] = useState("");
   const filteredMajors = useMemo(() => majors.filter((major) => `${major.name} ${major.group}`.toLocaleLowerCase("vi-VN").includes(query.toLocaleLowerCase("vi-VN")) && (level === "Tất cả trình độ" || major.level === level)), [majors, query, level]);
   const isAdmin = user.role === "admin";
-  useEffect(()=>{const refresh=()=>{setClasses(readDemoData("classes",seedClasses));setExams(readDemoData("exams",seedDemoExams()));setAttempts(readDemoData("attempts",[]));};refresh();window.addEventListener(demoStorageEvent,refresh);window.addEventListener("storage",refresh);return()=>{window.removeEventListener(demoStorageEvent,refresh);window.removeEventListener("storage",refresh);};},[]);
+  useEffect(()=>{const refresh=()=>{if(demoMode)setClasses(readDemoData("classes",seedClasses));setExams(readDemoData("exams",seedDemoExams()));setAttempts(readDemoData("attempts",[]));};refresh();window.addEventListener(demoStorageEvent,refresh);window.addEventListener("storage",refresh);return()=>{window.removeEventListener(demoStorageEvent,refresh);window.removeEventListener("storage",refresh);};},[]);
   useEffect(() => {
     let alive = true;
     const refresh = async () => {
       try {
-        const [overviewResponse, rosterResponse, examResponse, attemptResponse] = await Promise.all([fetch("/api/v1/overview"), fetch("/api/v1/auth/roster-accounts"), fetch("/api/v1/exams"), fetch("/api/v1/exam-attempts")]);
+        const [overviewResponse, rosterResponse, examResponse, attemptResponse, classResponse] = await Promise.all([fetch("/api/v1/overview"), fetch("/api/v1/auth/roster-accounts"), fetch("/api/v1/exams"), fetch("/api/v1/exam-attempts"), fetch("/api/v1/catalog/classes")]);
         if (!alive) return;
         if (overviewResponse.ok) setOverview(await overviewResponse.json() as InstitutionOverview);
         if (rosterResponse.ok) setRosterAccounts(await rosterResponse.json() as RosterStudentAccount[]);
         if (examResponse.ok) setExams(await examResponse.json() as Exam[]);
         if (attemptResponse.ok) setAttempts(await attemptResponse.json() as DemoAttempt[]);
+        if (classResponse.ok) {
+          const remoteClasses = await classResponse.json() as DemoClass[];
+          setClasses(demoMode ? readDemoData("classes", seedClasses) : remoteClasses);
+        }
       } catch { /* Keep the last available school summary while the API reconnects. */ }
     };
     void refresh();
     const timer = window.setInterval(() => { void refresh(); }, 15_000);
     return () => { alive = false; window.clearInterval(timer); };
   }, [user.role]);
+  useEffect(() => { if (!credentialClassId && classes.length) setCredentialClassId(classes[0].id); }, [classes, credentialClassId]);
   const studentCount=classes.reduce((sum,item)=>sum+item.students.length,0);
   const averageScore=attempts.length?attempts.reduce((sum,item)=>sum+(item.totalPoints?item.score/item.totalPoints*10:0),0)/attempts.length:0;
   function exportInstitutionReport(){const rows=[["MSSV","Họ tên","Ngành","Email Google","Bài kiểm tra","Lớp","Điểm","Thang điểm","Nộp lúc","Tín hiệu giám sát","Tự nộp do vi phạm"],...attempts.map((attempt)=>{const exam=exams.find((item)=>item.id===attempt.examId);return[attempt.studentCode||"",attempt.studentName,attempt.major||"",attempt.email||"",exam?.title||"",exam?.className||"",attempt.score,attempt.totalPoints,attempt.submittedAt,integritySummary(attempt.integrityEvents),attempt.integrityAutoSubmitted?"Có":"Không"];})];downloadCsvFile("meotdc-bao-cao-nha-truong.csv",rows);}
@@ -1802,15 +1855,15 @@ function ExamTable({ exams, compact = false, query, setQuery, onTogglePublish }:
     {!compact && <div className="table-foot"><span>Hiển thị {exams.length} bài kiểm tra</span><div><button disabled>‹ Trước</button><button disabled>Sau ›</button></div></div>}</div>;
 }
 
-function ClassesPage({ majors }: { majors: Major[] }) {
+function ClassesPage({ majors, initialClasses }: { majors: Major[]; initialClasses: DemoClass[] }) {
   const majorsForClass = majors.map((item) => item.name);
-  const [classes, setClasses] = useState<DemoClass[]>(seedClasses);
+  const [classes, setClasses] = useState<DemoClass[]>(initialClasses);
   const [selectedClass, setSelectedClass] = useState(seedClasses[0].id);
   const [query, setQuery] = useState("");
   const [showCreate, setShowCreate] = useState(false);
   const [notice, setNotice] = useState("");
   const [rosterPreview, setRosterPreview] = useState<RosterImportPreview | null>(null);
-  useEffect(() => { const saved = readDemoData<DemoClass[] | null>("classes", null); if (saved) setClasses(saved); else writeDemoData("classes", seedClasses); }, []);
+  useEffect(() => { setClasses(demoMode ? readDemoData<DemoClass[]>("classes", initialClasses) : initialClasses); }, [initialClasses]);
   const selected = classes.find((item) => item.id === selectedClass) || classes[0];
   const filtered = classes.filter((item) => `${item.code} ${item.name} ${item.major} ${item.course}`.toLocaleLowerCase("vi-VN").includes(query.toLocaleLowerCase("vi-VN")));
   function saveClasses(next: DemoClass[]) { setClasses(next); writeDemoData("classes", next); }
@@ -1880,21 +1933,57 @@ function ClassesPage({ majors }: { majors: Major[] }) {
     setRosterPreview(null);
   }
   function downloadRoster() { if (!selected) return; downloadCsvFile(`${selected.code}-danh-sach.csv`,[["MSSV","Họ tên","Email","Lớp","Ngành"],...selected.students.map((name,index)=>[demoRosterCode(selected,name,index),name,selected.studentEmails?.[name]||"",selected.code,selected.major])]); }
-  return <><PageTitle eyebrow="TỔ CHỨC LỚP HỌC PHẦN" title="Lớp học" description="Quản lý lớp, ngành, học phần và danh sách sinh viên theo học kỳ."><button className="button button-secondary" onClick={downloadRoster} disabled={!selected}><Icon name="file" size={16}/> Xuất danh sách</button><button className="button button-primary" onClick={() => setShowCreate(true)}><Icon name="plus" size={18}/> Tạo lớp</button></PageTitle><div className="class-management"><section className="panel class-list-panel"><div className="class-list-heading"><h2>Lớp của tôi <span>{classes.length}</span></h2><label className="search-field"><Icon name="search" size={15}/><input placeholder="Tìm mã lớp, ngành…" value={query} onChange={(event)=>setQuery(event.target.value)}/></label></div><div className="class-list">{filtered.map((item,index)=><button key={item.id} className={`class-list-item ${selected?.id===item.id?"selected":""}`} onClick={()=>setSelectedClass(item.id)}><span className={`class-card-icon subject-${index%4}`}><Icon name="users" size={17}/></span><span><strong>{item.code}</strong><small>{item.major} · {item.course}</small></span><span className="class-list-count">{item.students.length}</span></button>)}</div></section>{selected && <section className="panel class-detail-panel"><div className="role-panel-heading"><div><div className="eyebrow">HỌC KỲ I · 2026–2027</div><h2>{selected.name}</h2><p>{selected.code} · {selected.major} · {selected.course}</p></div><span className="small-count">{selected.students.length} sinh viên</span></div><div className="class-owner-strip"><span className="avatar">{initials(selected.teacher)}</span><span><small>Giảng viên phụ trách</small><strong>{selected.teacher}</strong></span><span className="role-chip">Đang hoạt động</span></div><div className="roster-toolbar"><strong>Danh sách sinh viên</strong><label className="button button-secondary roster-upload-button"><Icon name="file" size={15}/> Nhập CSV<input type="file" accept=".csv,.txt" onChange={(event)=>{ void importRoster(event.target.files?.[0]); event.currentTarget.value = ""; }}/></label></div><div className="roster-table-wrap"><table className="roster-table"><thead><tr><th>MSSV</th><th>HỌ TÊN</th><th>GMAIL</th><th>TRẠNG THÁI</th></tr></thead><tbody>{selected.students.map((name,index)=><tr key={`${name}-${index}`}><td>{demoRosterCode(selected,name,index)}</td><td><span className="roster-student"><span className="avatar">{initials(name)}</span><strong>{name}</strong></span></td><td>{selected.studentEmails?.[name]||"—"}</td><td><span className="status-badge status-live"><i/>Đã ghi danh</span></td></tr>)}</tbody></table>{selected.students.length===0&&<EmptyState title="Lớp chưa có sinh viên" description="Nhập danh sách CSV để thêm người học vào lớp demo."/>}</div><p className="role-disclaimer">CSV hỗ trợ MSSV, Họ tên và Email/Gmail. Nếu Google email khớp roster, MeoTDC sẽ gắn tài khoản với đúng lớp.</p></section>}</div>{notice&&<div role="status" className="toast"><span className="toast-check">✓</span>{notice}</div>}{rosterPreview&&<div className="modal-backdrop"><section className="modal-card roster-import-modal" role="dialog" aria-modal="true" aria-labelledby="roster-import-title"><div className="modal-heading"><div><div className="eyebrow">KIỂM TRA DANH SÁCH · {selected?.code}</div><h2 id="roster-import-title">Xem trước roster CSV</h2></div><button className="small-icon-button" onClick={()=>setRosterPreview(null)} aria-label="Đóng"><Icon name="close"/></button></div><p className="modal-intro">{rosterPreview.fileName} · chỉ thêm sinh viên sau khi bạn xác nhận.</p><div className="roster-import-summary"><span><strong>{rosterPreview.students.length}</strong><small>Dòng hợp lệ</small></span><span><strong>{rosterPreview.issueCount}</strong><small>Dòng cần sửa/bỏ qua</small></span><span><strong>{rosterPreview.totalRows}</strong><small>Tổng dòng dữ liệu</small></span></div>{rosterPreview.students.length>0&&<div className="table-scroll roster-import-table"><table className="roster-table"><thead><tr><th>MSSV</th><th>HỌ TÊN</th><th>EMAIL</th></tr></thead><tbody>{rosterPreview.students.slice(0,6).map((student)=><tr key={student.studentCode}><td>{student.studentCode}</td><td>{student.fullName}</td><td>{student.email||"—"}</td></tr>)}</tbody></table>{rosterPreview.students.length>6&&<small>Hiển thị 6 trên {rosterPreview.students.length} dòng hợp lệ.</small>}</div>}{rosterPreview.issues.length>0&&<div className="roster-import-issues" role="alert"><strong>Các dòng cần rà soát</strong><ul>{rosterPreview.issues.map((issue,index)=><li key={`${issue}-${index}`}>{issue}</li>)}</ul>{rosterPreview.issueCount>rosterPreview.issues.length&&<small>Còn {rosterPreview.issueCount-rosterPreview.issues.length} dòng khác có vấn đề.</small>}</div>}<div className="modal-note"><Icon name="spark" size={17}/><span>Kiểm tra MSSV trùng và email sai trước khi thêm. Dữ liệu vẫn chỉ nằm trong bản demo ở trình duyệt.</span></div><div className="modal-actions"><button className="button button-secondary" onClick={()=>setRosterPreview(null)}>Hủy</button><button className="button button-primary" onClick={confirmRosterImport} disabled={rosterPreview.students.length===0}>Thêm {rosterPreview.students.length} sinh viên</button></div></section></div>}{showCreate&&<div className="modal-backdrop"><section className="modal-card" role="dialog" aria-modal="true"><div className="modal-heading"><div><div className="eyebrow">HỌC KỲ I · 2026–2027</div><h2>Tạo lớp học phần</h2></div><button className="small-icon-button" onClick={()=>setShowCreate(false)} aria-label="Đóng"><Icon name="close"/></button></div><form onSubmit={createClass}><div className="form-row"><label className="form-field"><span>Mã lớp</span><input name="code" required placeholder="CĐ26_TH1"/></label><label className="form-field"><span>Tên lớp</span><input name="name" required placeholder="Công nghệ thông tin 26 — Nhóm 1"/></label></div><label className="form-field"><span>Ngành</span><select name="major">{majorsForClass.map((major)=><option key={major}>{major}</option>)}</select></label><label className="form-field"><span>Học phần</span><input name="course" placeholder="Ví dụ: Cơ sở dữ liệu"/></label><div className="modal-actions"><button type="button" className="button button-secondary" onClick={()=>setShowCreate(false)}>Hủy</button><button className="button button-primary">Tạo lớp</button></div></form></section></div>}</>;
+  if (!demoMode) return <>
+    <PageTitle eyebrow="LỚP ĐƯỢC PHÂN CÔNG" title="Lớp học" description="Danh sách lớp và roster đồng bộ từ máy chủ trong phạm vi quyền của bạn."><button className="button button-secondary" onClick={downloadRoster} disabled={!selected}><Icon name="file" size={16}/> Xuất danh sách</button></PageTitle>
+    <div className="class-management"><section className="panel class-list-panel"><div className="class-list-heading"><h2>Lớp của tôi <span>{classes.length}</span></h2><label className="search-field"><Icon name="search" size={15}/><input placeholder="Tìm mã lớp, ngành…" value={query} onChange={(event) => setQuery(event.target.value)}/></label></div>
+      <div className="class-list">{filtered.map((item, index) => <button key={item.id} className={`class-list-item ${selected?.id === item.id ? "selected" : ""}`} onClick={() => setSelectedClass(item.id)}><span className={`class-card-icon subject-${index % 4}`}><Icon name="users" size={17}/></span><span><strong>{item.code}</strong><small>{item.major || "Ngành chưa đồng bộ"} · {item.course}</small></span><span className="class-list-count">{item.students.length}</span></button>)}{filtered.length === 0 && <p className="role-disclaimer">Máy chủ chưa có lớp được gán. Hãy cấu hình mã lớp cho giảng viên hoặc đồng bộ roster với trường.</p>}</div>
+    </section>{selected && <section className="panel class-detail-panel"><div className="role-panel-heading"><div><div className="eyebrow">ROSTER MÁY CHỦ</div><h2>{selected.name}</h2><p>{selected.code} · {selected.major || "Ngành chưa đồng bộ"} · {selected.course}</p></div><span className="small-count">{selected.students.length} sinh viên</span></div><div className="roster-table-wrap"><table className="roster-table"><thead><tr><th>MSSV</th><th>HỌ TÊN</th><th>EMAIL</th></tr></thead><tbody>{selected.students.map((name, index) => <tr key={`${name}-${index}`}><td>{selected.studentCodes?.[name] || "—"}</td><td><strong>{name}</strong></td><td>{selected.studentEmails?.[name] || "—"}</td></tr>)}</tbody></table>{selected.students.length === 0 && <EmptyState title="Chưa có roster" description="Nhà trường cần nhập danh sách và cấp quyền lớp trước."/>}</div></section>}</div>
+  </>;  return <><PageTitle eyebrow="TỔ CHỨC LỚP HỌC PHẦN" title="Lớp học" description="Quản lý lớp, ngành, học phần và danh sách sinh viên theo học kỳ."><button className="button button-secondary" onClick={downloadRoster} disabled={!selected}><Icon name="file" size={16}/> Xuất danh sách</button><button className="button button-primary" onClick={() => setShowCreate(true)}><Icon name="plus" size={18}/> Tạo lớp</button></PageTitle><div className="class-management"><section className="panel class-list-panel"><div className="class-list-heading"><h2>Lớp của tôi <span>{classes.length}</span></h2><label className="search-field"><Icon name="search" size={15}/><input placeholder="Tìm mã lớp, ngành…" value={query} onChange={(event)=>setQuery(event.target.value)}/></label></div><div className="class-list">{filtered.map((item,index)=><button key={item.id} className={`class-list-item ${selected?.id===item.id?"selected":""}`} onClick={()=>setSelectedClass(item.id)}><span className={`class-card-icon subject-${index%4}`}><Icon name="users" size={17}/></span><span><strong>{item.code}</strong><small>{item.major} · {item.course}</small></span><span className="class-list-count">{item.students.length}</span></button>)}</div></section>{selected && <section className="panel class-detail-panel"><div className="role-panel-heading"><div><div className="eyebrow">HỌC KỲ I · 2026–2027</div><h2>{selected.name}</h2><p>{selected.code} · {selected.major} · {selected.course}</p></div><span className="small-count">{selected.students.length} sinh viên</span></div><div className="class-owner-strip"><span className="avatar">{initials(selected.teacher)}</span><span><small>Giảng viên phụ trách</small><strong>{selected.teacher}</strong></span><span className="role-chip">Đang hoạt động</span></div><div className="roster-toolbar"><strong>Danh sách sinh viên</strong><label className="button button-secondary roster-upload-button"><Icon name="file" size={15}/> Nhập CSV<input type="file" accept=".csv,.txt" onChange={(event)=>{ void importRoster(event.target.files?.[0]); event.currentTarget.value = ""; }}/></label></div><div className="roster-table-wrap"><table className="roster-table"><thead><tr><th>MSSV</th><th>HỌ TÊN</th><th>GMAIL</th><th>TRẠNG THÁI</th></tr></thead><tbody>{selected.students.map((name,index)=><tr key={`${name}-${index}`}><td>{demoRosterCode(selected,name,index)}</td><td><span className="roster-student"><span className="avatar">{initials(name)}</span><strong>{name}</strong></span></td><td>{selected.studentEmails?.[name]||"—"}</td><td><span className="status-badge status-live"><i/>Đã ghi danh</span></td></tr>)}</tbody></table>{selected.students.length===0&&<EmptyState title="Lớp chưa có sinh viên" description="Nhập danh sách CSV để thêm người học vào lớp demo."/>}</div><p className="role-disclaimer">CSV hỗ trợ MSSV, Họ tên và Email/Gmail. Nếu Google email khớp roster, MeoTDC sẽ gắn tài khoản với đúng lớp.</p></section>}</div>{notice&&<div role="status" className="toast"><span className="toast-check">✓</span>{notice}</div>}{rosterPreview&&<div className="modal-backdrop"><section className="modal-card roster-import-modal" role="dialog" aria-modal="true" aria-labelledby="roster-import-title"><div className="modal-heading"><div><div className="eyebrow">KIỂM TRA DANH SÁCH · {selected?.code}</div><h2 id="roster-import-title">Xem trước roster CSV</h2></div><button className="small-icon-button" onClick={()=>setRosterPreview(null)} aria-label="Đóng"><Icon name="close"/></button></div><p className="modal-intro">{rosterPreview.fileName} · chỉ thêm sinh viên sau khi bạn xác nhận.</p><div className="roster-import-summary"><span><strong>{rosterPreview.students.length}</strong><small>Dòng hợp lệ</small></span><span><strong>{rosterPreview.issueCount}</strong><small>Dòng cần sửa/bỏ qua</small></span><span><strong>{rosterPreview.totalRows}</strong><small>Tổng dòng dữ liệu</small></span></div>{rosterPreview.students.length>0&&<div className="table-scroll roster-import-table"><table className="roster-table"><thead><tr><th>MSSV</th><th>HỌ TÊN</th><th>EMAIL</th></tr></thead><tbody>{rosterPreview.students.slice(0,6).map((student)=><tr key={student.studentCode}><td>{student.studentCode}</td><td>{student.fullName}</td><td>{student.email||"—"}</td></tr>)}</tbody></table>{rosterPreview.students.length>6&&<small>Hiển thị 6 trên {rosterPreview.students.length} dòng hợp lệ.</small>}</div>}{rosterPreview.issues.length>0&&<div className="roster-import-issues" role="alert"><strong>Các dòng cần rà soát</strong><ul>{rosterPreview.issues.map((issue,index)=><li key={`${issue}-${index}`}>{issue}</li>)}</ul>{rosterPreview.issueCount>rosterPreview.issues.length&&<small>Còn {rosterPreview.issueCount-rosterPreview.issues.length} dòng khác có vấn đề.</small>}</div>}<div className="modal-note"><Icon name="spark" size={17}/><span>Kiểm tra MSSV trùng và email sai trước khi thêm. Dữ liệu vẫn chỉ nằm trong bản demo ở trình duyệt.</span></div><div className="modal-actions"><button className="button button-secondary" onClick={()=>setRosterPreview(null)}>Hủy</button><button className="button button-primary" onClick={confirmRosterImport} disabled={rosterPreview.students.length===0}>Thêm {rosterPreview.students.length} sinh viên</button></div></section></div>}{showCreate&&<div className="modal-backdrop"><section className="modal-card" role="dialog" aria-modal="true"><div className="modal-heading"><div><div className="eyebrow">HỌC KỲ I · 2026–2027</div><h2>Tạo lớp học phần</h2></div><button className="small-icon-button" onClick={()=>setShowCreate(false)} aria-label="Đóng"><Icon name="close"/></button></div><form onSubmit={createClass}><div className="form-row"><label className="form-field"><span>Mã lớp</span><input name="code" required placeholder="CĐ26_TH1"/></label><label className="form-field"><span>Tên lớp</span><input name="name" required placeholder="Công nghệ thông tin 26 — Nhóm 1"/></label></div><label className="form-field"><span>Ngành</span><select name="major">{majorsForClass.map((major)=><option key={major}>{major}</option>)}</select></label><label className="form-field"><span>Học phần</span><input name="course" placeholder="Ví dụ: Cơ sở dữ liệu"/></label><div className="modal-actions"><button type="button" className="button button-secondary" onClick={()=>setShowCreate(false)}>Hủy</button><button className="button button-primary">Tạo lớp</button></div></form></section></div>}</>;
 }
 
-function CoursesPage() {
-  const [courses, setCourses] = useState<DemoCourse[]>(seedCourses);
+function CoursesPage({ courses: initialCourses, onSave }: { courses: DemoCourse[]; onSave: (course: DemoCourse) => Promise<void> }) {
+  const [courses, setCourses] = useState<DemoCourse[]>(initialCourses);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [showCourse, setShowCourse] = useState(false);
   const [lessonCourseId, setLessonCourseId] = useState<string | null>(null);
   const [notice, setNotice] = useState("");
-  useEffect(() => { const stored = readDemoData<DemoCourse[] | null>("courses", null); if (stored) setCourses(stored); else writeDemoData("courses", seedCourses); }, []);
+  useEffect(() => { setCourses(initialCourses); }, [initialCourses]);
   const selected = courses.find((course) => course.id === selectedId);
-  function save(next: DemoCourse[]) { setCourses(next); writeDemoData("courses", next); }
-  function createCourse(event: FormEvent<HTMLFormElement>) { event.preventDefault(); const form = new FormData(event.currentTarget); const course: DemoCourse = { id: `course-${crypto.randomUUID()}`, title: String(form.get("title") || "").trim(), code: String(form.get("code") || "").trim(), className: String(form.get("className") || "CĐ23_TH1"), progress: 0, chapters: [{ title: "Chương 1 · Nội dung mới", lessons: [] }] }; const next = [...courses,course]; save(next); setSelectedId(course.id); setShowCourse(false); setNotice("Đã tạo khóa học mẫu. Thêm bài học để sinh viên có nội dung."); }
-  function addLesson(event: FormEvent<HTMLFormElement>) { event.preventDefault(); if (!lessonCourseId) return; const form = new FormData(event.currentTarget); const next = courses.map((course) => course.id === lessonCourseId ? { ...course, chapters: course.chapters.map((chapter,index)=>index===0?{...chapter,lessons:[...chapter.lessons,{title:String(form.get("title")||"").trim(),duration:String(form.get("duration")||"15 phút"),content:String(form.get("content")||"").trim()}]}:chapter) } : course); save(next); setLessonCourseId(null); setNotice("Đã thêm bài học vào khóa."); }
-  return <><PageTitle eyebrow="LMS · NỘI DUNG THEO HỌC PHẦN" title="Khóa học" description="Tổ chức chương, bài học, tài liệu và hoạt động đánh giá cho từng lớp."><button className="button button-primary" onClick={() => setShowCourse(true)}><Icon name="plus" size={18}/> Tạo khóa học</button></PageTitle><div className="course-grid">{courses.map((course,index) => { const lessonCount=course.chapters.reduce((sum,chapter)=>sum+chapter.lessons.length,0); return <article className="panel course-card" key={course.id}><button className={`course-cover ${["purple","blue","orange","green"][index%4]}`} onClick={()=>setSelectedId(selectedId===course.id?null:course.id)}><span className="course-cover-mark"><Icon name="book" size={26}/></span><span className="course-cover-code">{course.code.split(" ·")[0]}</span><span className="course-cover-context">{course.className}</span></button><div className="course-body"><div className="course-subtitle">HỌC KỲ I · 2026–2027</div><h2>{course.title}</h2><p>{lessonCount} bài học <span>·</span> {course.className}</p><div className="progress-copy"><span>Tiến độ của lớp mẫu</span><strong>{course.progress}%</strong></div><div className="progress-track"><i style={{ width: `${course.progress}%` }}/></div><button className="course-link" onClick={()=>setSelectedId(selectedId===course.id?null:course.id)}>{selectedId===course.id?"Thu gọn":"Mở khóa học"}<Icon name="arrow" size={15}/></button></div></article>; })}</div>{selected&&<section className="panel course-detail-panel"><div className="role-panel-heading"><div><div className="eyebrow">{selected.code} · {selected.className}</div><h2>{selected.title}</h2><p>Giảng viên Trần Minh Giang · {selected.chapters.length} chương · {selected.chapters.reduce((n,chapter)=>n+chapter.lessons.length,0)} bài học</p></div><button className="button button-secondary" onClick={()=>setLessonCourseId(selected.id)}><Icon name="plus" size={15}/> Thêm bài học</button></div><div className="course-chapters">{selected.chapters.map((chapter,index)=><div className="course-chapter" key={chapter.title}><strong>{chapter.title}</strong>{chapter.lessons.length?chapter.lessons.map((lesson,lessonIndex)=><div className="course-lesson" key={`${lesson.title}-${lessonIndex}`}><span className="lesson-check">{lessonIndex+1}</span><span><strong>{lesson.title}</strong><small>{lesson.duration} · Bài đọc và tài liệu</small></span><span className="role-chip">Bản nháp</span></div>):<p className="role-disclaimer">Chưa có nội dung. Thêm bài học để tạo lộ trình cho sinh viên.</p>}</div>)}</div></section>}{notice&&<div role="status" className="toast"><span className="toast-check">✓</span>{notice}</div>}{showCourse&&<div className="modal-backdrop"><section className="modal-card" role="dialog" aria-modal="true"><div className="modal-heading"><div><div className="eyebrow">LMS · HỌC KỲ I</div><h2>Tạo khóa học</h2></div><button className="small-icon-button" onClick={()=>setShowCourse(false)} aria-label="Đóng"><Icon name="close"/></button></div><form onSubmit={createCourse}><label className="form-field"><span>Tên khóa học</span><input name="title" required placeholder="Ví dụ: Cơ sở dữ liệu nâng cao"/></label><div className="form-row"><label className="form-field"><span>Mã học phần</span><input name="code" required placeholder="CSDL-NC · 3 tín chỉ"/></label><label className="form-field"><span>Lớp</span><select name="className">{readDemoData<DemoClass[]>("classes",seedClasses).map((item)=><option key={item.id} value={item.code}>{item.code} · {item.major}</option>)}{demoMode && <option>Toàn trường (mô phỏng)</option>}</select></label></div><div className="modal-actions"><button type="button" className="button button-secondary" onClick={()=>setShowCourse(false)}>Hủy</button><button className="button button-primary">Tạo khóa</button></div></form></section></div>}{lessonCourseId&&<div className="modal-backdrop"><section className="modal-card" role="dialog" aria-modal="true"><div className="modal-heading"><div><div className="eyebrow">THÊM NỘI DUNG LMS</div><h2>Bài học mới</h2></div><button className="small-icon-button" onClick={()=>setLessonCourseId(null)} aria-label="Đóng"><Icon name="close"/></button></div><form onSubmit={addLesson}><label className="form-field"><span>Tên bài học</span><input name="title" required placeholder="Ví dụ: JOIN và truy vấn nhiều bảng"/></label><label className="form-field"><span>Thời lượng dự kiến</span><input name="duration" defaultValue="20 phút"/></label><label className="form-field"><span>Nội dung bài học</span><textarea name="content" rows={5} placeholder="Ghi bài đọc, hướng dẫn thực hành hoặc liên kết tài liệu…"/></label><div className="modal-actions"><button type="button" className="button button-secondary" onClick={()=>setLessonCourseId(null)}>Hủy</button><button className="button button-primary">Lưu bài học</button></div></form></section></div>}</>;
+  function save(next: DemoCourse[]) {
+    const changed = next.find((course) => JSON.stringify(course) !== JSON.stringify(courses.find((item) => item.id === course.id)));
+    setCourses(next);
+    if (demoMode) writeDemoData("courses", next);
+    if (changed) void onSave(changed).then(() => setNotice("Đã lưu khóa học trên máy chủ.")).catch((error) => setNotice(error instanceof Error ? error.message : "Không lưu được khóa học."));
+  }
+  function createCourse(event: FormEvent<HTMLFormElement>) { event.preventDefault(); const form = new FormData(event.currentTarget); const course: DemoCourse = { id: `course-${crypto.randomUUID()}`, title: String(form.get("title") || "").trim(), code: String(form.get("code") || "").trim(), className: String(form.get("className") || "").trim(), progress: 0, chapters: [{ title: "Chương 1 · Nội dung mới", lessons: [] }] }; const next = [...courses,course]; save(next); setSelectedId(course.id); setShowCourse(false); setNotice("Đang lưu khóa học lên máy chủ…"); }
+  function addLesson(event: FormEvent<HTMLFormElement>) { event.preventDefault(); if (!lessonCourseId) return; const form = new FormData(event.currentTarget); const next = courses.map((course) => course.id === lessonCourseId ? { ...course, chapters: course.chapters.map((chapter,index)=>index===0?{...chapter,lessons:[...chapter.lessons,{title:String(form.get("title")||"").trim(),duration:String(form.get("duration")||"15 phút"),content:String(form.get("content")||"").trim()}]}:chapter) } : course); save(next); setLessonCourseId(null); setNotice("Đang lưu bài học lên máy chủ…"); }
+  return <>
+    <PageTitle eyebrow="LMS · NỘI DUNG THEO HỌC PHẦN" title="Khóa học" description="Tổ chức chương và bài học theo lớp; nội dung được lưu trên máy chủ.">
+      <button className="button button-primary" onClick={() => setShowCourse(true)}><Icon name="plus" size={18}/> Tạo khóa học</button>
+    </PageTitle>
+    {courses.length ? <div className="course-grid">{courses.map((course, index) => {
+      const lessonCount = course.chapters.reduce((sum, chapter) => sum + chapter.lessons.length, 0);
+      return <article className="panel course-card" key={course.id}>
+        <button className={`course-cover ${["purple", "blue", "orange", "green"][index % 4]}`} onClick={() => setSelectedId(selectedId === course.id ? null : course.id)}>
+          <span className="course-cover-mark"><Icon name="book" size={26}/></span><span className="course-cover-code">{course.code.split(" ·")[0]}</span><span className="course-cover-context">{course.className}</span>
+        </button>
+        <div className="course-body"><div className="course-subtitle">HỌC PHẦN · {course.className}</div><h2>{course.title}</h2><p>{lessonCount} bài học</p>
+          <div className="progress-copy"><span>Tiến độ của lớp</span><strong>{course.progress}%</strong></div><div className="progress-track"><i style={{ width: `${course.progress}%` }}/></div>
+          <button className="course-link" onClick={() => setSelectedId(selectedId === course.id ? null : course.id)}>{selectedId === course.id ? "Thu gọn" : "Mở khóa học"}<Icon name="arrow" size={15}/></button>
+        </div>
+      </article>;
+    })}</div> : <EmptyState title="Chưa có khóa học" description="Tạo khóa học và gắn với lớp đã được phân công để sinh viên truy cập nội dung."/>}
+    {selected && <section className="panel course-detail-panel"><div className="role-panel-heading"><div><div className="eyebrow">{selected.code} · {selected.className}</div><h2>{selected.title}</h2><p>{selected.chapters.length} chương · {selected.chapters.reduce((sum, chapter) => sum + chapter.lessons.length, 0)} bài học</p></div><button className="button button-secondary" onClick={() => setLessonCourseId(selected.id)}><Icon name="plus" size={15}/> Thêm bài học</button></div>
+      <div className="course-chapters">{selected.chapters.map((chapter, index) => <div className="course-chapter" key={`${chapter.title}-${index}`}><strong>{chapter.title}</strong>{chapter.lessons.map((lesson, lessonIndex) => <div className="course-lesson" key={`${lesson.title}-${lessonIndex}`}><span className="lesson-check">{lessonIndex + 1}</span><span><strong>{lesson.title}</strong><small>{lesson.duration} · Bài học</small></span></div>)}</div>)}</div>
+    </section>}
+    {notice && <div role="status" className="toast"><span className="toast-check">✓</span>{notice}</div>}
+    {showCourse && <div className="modal-backdrop"><section className="modal-card" role="dialog" aria-modal="true"><div className="modal-heading"><div><div className="eyebrow">LMS · HỌC PHẦN</div><h2>Tạo khóa học</h2></div><button className="small-icon-button" onClick={() => setShowCourse(false)} aria-label="Đóng"><Icon name="close"/></button></div>
+      <form onSubmit={createCourse}><label className="form-field"><span>Tên khóa học</span><input name="title" required maxLength={180} placeholder="Ví dụ: Cơ sở dữ liệu nâng cao"/></label><div className="form-row"><label className="form-field"><span>Mã học phần</span><input name="code" required maxLength={80} placeholder="CSDL-NC · 3 tín chỉ"/></label><label className="form-field"><span>Mã lớp được gán</span><input name="className" required maxLength={80} list="course-class-codes" placeholder="Nhập mã lớp được phân công"/><datalist id="course-class-codes">{(demoMode ? readDemoData<DemoClass[]>("classes", seedClasses) : []).map((item) => <option key={item.id} value={item.code}/>)}{demoMode && <option value="Toàn trường (mô phỏng)"/>}</datalist></label></div><div className="modal-actions"><button type="button" className="button button-secondary" onClick={() => setShowCourse(false)}>Hủy</button><button className="button button-primary">Tạo khóa</button></div></form>
+    </section></div>}
+    {lessonCourseId && <div className="modal-backdrop"><section className="modal-card" role="dialog" aria-modal="true"><div className="modal-heading"><div><div className="eyebrow">NỘI DUNG KHÓA HỌC</div><h2>Thêm bài học</h2></div><button className="small-icon-button" onClick={() => setLessonCourseId(null)} aria-label="Đóng"><Icon name="close"/></button></div>
+      <form onSubmit={addLesson}><label className="form-field"><span>Tên bài học</span><input name="title" required maxLength={180} placeholder="Ví dụ: JOIN và truy vấn nhiều bảng"/></label><label className="form-field"><span>Thời lượng dự kiến</span><input name="duration" maxLength={60} defaultValue="20 phút"/></label><label className="form-field"><span>Nội dung bài học</span><textarea name="content" rows={5} maxLength={20000} placeholder="Ghi bài đọc, hướng dẫn thực hành hoặc liên kết tài liệu…"/></label><div className="modal-actions"><button type="button" className="button button-secondary" onClick={() => setLessonCourseId(null)}>Hủy</button><button className="button button-primary">Lưu bài học</button></div></form>
+    </section></div>}
+  </>;
 }
 
 function QuestionBankPage({ onImport }: { onImport: () => void }) {

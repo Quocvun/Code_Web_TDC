@@ -8,7 +8,7 @@ import { FileInterceptor } from "@nestjs/platform-express";
 import { NestFactory } from "@nestjs/core";
 import { demoAccounts, demoPassword, getMajorCatalog, majors, type MeoUser } from "./catalog";
 import { ExamRuntimeService } from "./exam-runtime.service";
-import { DatabaseService, type LearningAssignmentRecord, type LearningSubmissionRecord, type PersistedRosterAccount, type PersistedSubmissionFile } from "./database.service";
+import { DatabaseService, type LearningAssignmentRecord, type LearningCourseRecord, type LearningSubmissionRecord, type PersistedRosterAccount, type PersistedSubmissionFile } from "./database.service";
 import { ObjectStorageService } from "./object-storage.service";
 import { FileScannerService } from "./file-scanner.service";
 
@@ -256,6 +256,8 @@ class AppController {
   private readonly rosterAccounts = new Map<string, RosterDemoAccount>();
   private readonly submissionFiles = new Map<string, StoredAssignmentFile>();
   private readonly learningAssignments = new Map<string, LearningAssignmentRecord>();
+  private readonly learningCourses = new Map<string, LearningCourseRecord>();
+  private readonly courseProgress = new Map<string, { completedLessons: string[]; progress: number }>();
   private readonly learningSubmissions = new Map<string, LearningSubmissionRecord>();
   private submissionFilesReady: Promise<void> | null = null;
 
@@ -265,6 +267,10 @@ class AppController {
 
   private async allLearningAssignments() {
     return this.database.enabled ? this.database.listLearningAssignments() : [...this.learningAssignments.values()];
+  }
+
+  private async allLearningCourses() {
+    return this.database.enabled ? this.database.listLearningCourses() : [...this.learningCourses.values()];
   }
 
   private async getLearningAssignment(id: string) {
@@ -305,6 +311,74 @@ class AppController {
     if (user.role === "student") return assignments.filter((assignment) => assignment.published && assignment.className === user.className);
     if (user.role === "teacher") return assignments.filter((assignment) => assignment.ownerId === user.id && this.teacherHasClassAccess(user, assignment.className));
     return assignments;
+  }
+
+  private async visibleLearningCourses(user: MeoUser) {
+    const courses = await this.allLearningCourses();
+    if (user.role === "student") return courses.filter((course) => course.className === user.className || course.className === "Toàn trường (mô phỏng)");
+    if (user.role === "teacher") return courses.filter((course) => course.ownerId === user.id && this.teacherHasClassAccess(user, course.className));
+    return courses;
+  }
+
+  @Get("courses")
+  async listLearningCourses(@Req() request: RequestLike) {
+    const user = await requireAuthenticatedSession(request, this.database);
+    const courses = await this.visibleLearningCourses(user);
+    return Promise.all(courses.map(async (course) => {
+      const progress = user.role === "student"
+        ? this.database.enabled
+          ? await this.database.getLearningCourseProgress(course.id, user.id)
+          : this.courseProgress.get(`${course.id}:${user.id}`) || { completedLessons: [], progress: 0 }
+        : { completedLessons: [], progress: 0 };
+      const totalLessons = course.chapters.reduce((sum, chapter) => sum + chapter.lessons.length, 0);
+      const completedLessons = user.role === "student" ? progress.completedLessons.filter((id) => {
+        const match = /^(\d+)-(\d+)$/.exec(id);
+        return Boolean(match && course.chapters[Number(match[1])]?.lessons[Number(match[2])]);
+      }) : [];
+      return { id: course.id, title: course.title, code: course.code, className: course.className, chapters: course.chapters, progress: totalLessons ? Math.round(completedLessons.length * 100 / totalLessons) : 0, completedLessons, serverBacked: true };
+    }));
+  }
+
+  @Post("courses")
+  async saveLearningCourse(@Req() request: RequestLike, @Body() body: Record<string, unknown>) {
+    const user = await requireAuthenticatedSession(request, this.database);
+    if (user.role !== "teacher" && user.role !== "admin") throw new ForbiddenException("Chỉ giảng viên hoặc quản trị viên được chỉnh sửa nội dung khóa học.");
+    if (!body || typeof body !== "object" || Array.isArray(body)) throw new BadRequestException("Thông tin khóa học không hợp lệ.");
+    const id = typeof body.id === "string" ? body.id.trim() : "";
+    const title = typeof body.title === "string" ? body.title.trim() : "";
+    const code = typeof body.code === "string" ? body.code.trim() : "";
+    const className = typeof body.className === "string" ? body.className.trim() : "";
+    const chapters = body.chapters;
+    if (!/^[a-z0-9-]{1,160}$/i.test(id) || !title || title.length > 180 || !code || code.length > 80 || !className || className.length > 80) throw new BadRequestException("Mã, tên, học phần hoặc lớp khóa học chưa hợp lệ.");
+    if (!Array.isArray(chapters) || chapters.length > 100 || chapters.some((chapter) => !chapter || typeof chapter !== "object" || typeof chapter.title !== "string" || chapter.title.length > 180 || !Array.isArray(chapter.lessons) || chapter.lessons.length > 300 || chapter.lessons.some((lesson: unknown) => !lesson || typeof lesson !== "object" || typeof (lesson as Record<string, unknown>).title !== "string" || String((lesson as Record<string, unknown>).title).length > 180 || typeof (lesson as Record<string, unknown>).duration !== "string" || String((lesson as Record<string, unknown>).duration).length > 60 || ((lesson as Record<string, unknown>).content !== undefined && (typeof (lesson as Record<string, unknown>).content !== "string" || String((lesson as Record<string, unknown>).content).length > 20_000))))) throw new BadRequestException("Nội dung chương hoặc bài học chưa hợp lệ.");
+    if (Buffer.byteLength(JSON.stringify(chapters), "utf8") > 300_000) throw new BadRequestException("Nội dung khóa học vượt giới hạn 300 KB.");
+    this.assertTeacherClassAccess(user, className);
+    const existing = this.database.enabled ? await this.database.getLearningCourse(id) : this.learningCourses.get(id) || null;
+    if (existing && user.role === "teacher" && existing.ownerId !== user.id) throw new ForbiddenException("Khóa học không thuộc phạm vi quản lý của bạn.");
+    const course: LearningCourseRecord = { id, ownerId: existing?.ownerId || user.id, title, code, className, chapters: chapters as LearningCourseRecord["chapters"], createdAt: existing?.createdAt || new Date().toISOString() };
+    if (this.database.enabled) {
+      if (!await this.database.saveLearningCourse(course)) throw new ForbiddenException("Khóa học không thuộc phạm vi quản lý của bạn.");
+    } else this.learningCourses.set(id, course);
+    return { course: { id: course.id, title: course.title, code: course.code, className: course.className, chapters: course.chapters, progress: 0, completedLessons: [], serverBacked: true } };
+  }
+
+  @Post("courses/:courseId/progress")
+  async markLearningLessonComplete(@Req() request: RequestLike, @Param("courseId") courseId: string, @Body() body: Record<string, unknown>) {
+    const user = await requireStudentSession(request, this.database);
+    const course = (await this.allLearningCourses()).find((item) => item.id === courseId);
+    if (!course || (course.className !== user.className && course.className !== "Toàn trường (mô phỏng)")) throw new ForbiddenException("Khóa học không thuộc lớp của bạn.");
+    const chapterIndex = Number(body?.chapterIndex);
+    const lessonIndex = Number(body?.lessonIndex);
+    if (!Number.isInteger(chapterIndex) || !Number.isInteger(lessonIndex) || chapterIndex < 0 || lessonIndex < 0 || !course.chapters[chapterIndex]?.lessons[lessonIndex]) throw new BadRequestException("Bài học không tồn tại trong khóa học.");
+    const lessonId = `${chapterIndex}-${lessonIndex}`;
+    const totalLessons = course.chapters.reduce((sum, chapter) => sum + chapter.lessons.length, 0);
+    if (this.database.enabled) return this.database.completeLearningCourseLesson(course.id, user.id, lessonId, totalLessons);
+    const current = this.courseProgress.get(`${course.id}:${user.id}`) || { completedLessons: [], progress: 0 };
+    const completedLessons = current.completedLessons.includes(lessonId) ? current.completedLessons : [...current.completedLessons, lessonId];
+    const progress = totalLessons ? Math.round(completedLessons.length * 100 / totalLessons) : 0;
+    const saved = { completedLessons, progress };
+    this.courseProgress.set(`${course.id}:${user.id}`, saved);
+    return saved;
   }
 
   private async submissionsForAssignments(assignments: LearningAssignmentRecord[]) {
@@ -480,6 +554,63 @@ class AppController {
   @Get("catalog/majors")
   listMajors() {
     return getMajorCatalog();
+  }
+
+  @Get("catalog/classes")
+  async listAcademicClasses(@Req() request: RequestLike) {
+    const user = await requireAuthenticatedSession(request, this.database);
+    const known = new Map<string, { courses: Set<string>; students: Map<string, MeoUser> }>();
+    const ensure = (code: string) => {
+      const normalized = code.trim().slice(0, 80);
+      if (!normalized) return null;
+      const existing = known.get(normalized) || { courses: new Set<string>(), students: new Map<string, MeoUser>() };
+      known.set(normalized, existing);
+      return existing;
+    };
+    if (user.role === "school" || user.role === "admin" || user.role === "teacher") {
+      const roster = this.database.enabled ? await this.database.listRosterAccounts() : [...this.rosterAccounts.values()];
+      for (const { user: student } of roster) {
+        if (!student.className || (user.role === "teacher" && !this.teacherHasClassAccess(user, student.className))) continue;
+        ensure(student.className)?.students.set(student.id, student);
+      }
+    } else if (user.className) ensure(user.className)?.students.set(user.id, user);
+    const [courses, assignments, exams] = await Promise.all([
+      this.visibleLearningCourses(user),
+      this.visibleLearningAssignments(user),
+      this.visibleExams(user),
+    ]);
+    for (const course of courses) ensure(course.className)?.courses.add(course.title);
+    for (const assignment of assignments) ensure(assignment.className)?.courses.add(assignment.course);
+    for (const exam of exams) ensure(exam.className || "")?.courses.add(exam.course);
+    if (user.role === "teacher" && process.env.NODE_ENV === "production") {
+      const email = user.email?.trim().toLowerCase() || "";
+      for (const entry of (process.env.MEOTDC_TEACHER_CLASS_ASSIGNMENTS || "").split(";")) {
+        const separator = entry.indexOf("=");
+        if (separator > 0 && entry.slice(0, separator).trim().toLowerCase() === email) {
+          for (const code of entry.slice(separator + 1).split("|")) ensure(code);
+        }
+      }
+    }
+    return [...known.entries()].sort(([left], [right]) => left.localeCompare(right, "vi")).map(([code, details]) => {
+      const students = [...details.students.values()];
+      const studentCodes: Record<string, string> = {};
+      const studentEmails: Record<string, string> = {};
+      for (const student of students) {
+        if (student.studentCode) studentCodes[student.fullName] = student.studentCode;
+        if (student.email) studentEmails[student.fullName] = student.email;
+      }
+      return {
+        id: `server-class-${encodeURIComponent(code)}`,
+        code,
+        name: code,
+        major: students.find((student) => student.major)?.major || "",
+        course: [...details.courses][0] || "Chưa gán học phần chính thức",
+        teacher: user.role === "teacher" ? user.fullName : "",
+        students: students.map((student) => student.fullName),
+        studentCodes,
+        studentEmails,
+      };
+    });
   }
 
   @Get("auth/demo-accounts")

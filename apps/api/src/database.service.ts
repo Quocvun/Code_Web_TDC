@@ -9,6 +9,8 @@ export type PersistedRosterAccount = { user: MeoUser; salt: Buffer; passwordHash
 export type RuntimeStateWriter = (state: unknown) => Promise<void>;
 export type PersistedSubmissionFile = { fileId: string; assignmentId: string; ownerId: string; originalName: string; contentType: string; size: number; storedName: string; createdAt: string };
 export type LearningAssignmentRecord = { id: string; ownerId: string; title: string; course: string; className: string; description: string; dueAt: string; points: number; published: boolean; createdAt: string };
+export type LearningCourseRecord = { id: string; ownerId: string; title: string; code: string; className: string; chapters: Array<{ title: string; lessons: Array<{ title: string; duration: string; content?: string }> }>; createdAt: string };
+export type LearningCourseProgressRecord = { completedLessons: string[]; progress: number };
 export type LearningSubmissionRecord = { id: string; assignmentId: string; studentId: string; studentName: string; response: string; fileId?: string; fileName?: string; fileSize?: number; submittedAt: string; score?: number; feedback?: string; status: "submitted" | "graded" | "revision" };
 
 @Injectable()
@@ -194,6 +196,65 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
       [assignment.id, assignment.ownerId, assignment.title, assignment.course, assignment.className, assignment.description, assignment.dueAt, assignment.points, assignment.published, assignment.createdAt],
     );
     return assignment;
+  }
+
+  async listLearningCourses() {
+    const result = await this.query<{ course_id: string; owner_id: string; title: string; course_code: string; class_name: string; chapters: LearningCourseRecord["chapters"]; created_at: Date }>(
+      "SELECT course_id, owner_id, title, course_code, class_name, chapters, created_at FROM meotdc_learning_courses ORDER BY updated_at DESC, title",
+    );
+    return result.rows.map((row): LearningCourseRecord => ({ id: row.course_id, ownerId: row.owner_id, title: row.title, code: row.course_code, className: row.class_name, chapters: row.chapters, createdAt: new Date(row.created_at).toISOString() }));
+  }
+
+  async getLearningCourse(id: string) {
+    const result = await this.query<{ course_id: string; owner_id: string; title: string; course_code: string; class_name: string; chapters: LearningCourseRecord["chapters"]; created_at: Date }>(
+      "SELECT course_id, owner_id, title, course_code, class_name, chapters, created_at FROM meotdc_learning_courses WHERE course_id = $1",
+      [id],
+    );
+    const row = result.rows[0];
+    return row ? { id: row.course_id, ownerId: row.owner_id, title: row.title, code: row.course_code, className: row.class_name, chapters: row.chapters, createdAt: new Date(row.created_at).toISOString() } satisfies LearningCourseRecord : null;
+  }
+
+  async saveLearningCourse(course: LearningCourseRecord) {
+    const result = await this.query<{ course_id: string }>(
+      `INSERT INTO meotdc_learning_courses (course_id, owner_id, title, course_code, class_name, chapters, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)
+       ON CONFLICT (course_id) DO UPDATE SET title = EXCLUDED.title, course_code = EXCLUDED.course_code, class_name = EXCLUDED.class_name, chapters = EXCLUDED.chapters, updated_at = now()
+       WHERE meotdc_learning_courses.owner_id = EXCLUDED.owner_id
+       RETURNING course_id`,
+      [course.id, course.ownerId, course.title, course.code, course.className, JSON.stringify(course.chapters), course.createdAt],
+    );
+    return result.rowCount === 1 ? course : null;
+  }
+
+  async getLearningCourseProgress(courseId: string, studentId: string): Promise<LearningCourseProgressRecord> {
+    const result = await this.query<{ completed_lessons: string[]; progress: number }>(
+      "SELECT completed_lessons, progress FROM meotdc_learning_course_progress WHERE course_id = $1 AND student_id = $2",
+      [courseId, studentId],
+    );
+    return result.rows[0] ? { completedLessons: result.rows[0].completed_lessons, progress: result.rows[0].progress } : { completedLessons: [], progress: 0 };
+  }
+
+  async completeLearningCourseLesson(courseId: string, studentId: string, lessonId: string, totalLessons: number): Promise<LearningCourseProgressRecord> {
+    const result = await this.query<{ completed_lessons: string[]; progress: number }>(
+      `INSERT INTO meotdc_learning_course_progress (course_id, student_id, completed_lessons, progress)
+       VALUES ($1, $2, jsonb_build_array($3::text), LEAST(100, round(100.0 / $4)::int))
+       ON CONFLICT (course_id, student_id) DO UPDATE SET
+         completed_lessons = CASE
+           WHEN meotdc_learning_course_progress.completed_lessons @> jsonb_build_array($3::text) THEN meotdc_learning_course_progress.completed_lessons
+           ELSE meotdc_learning_course_progress.completed_lessons || jsonb_build_array($3::text)
+         END,
+         progress = LEAST(100, round(
+           jsonb_array_length(CASE
+             WHEN meotdc_learning_course_progress.completed_lessons @> jsonb_build_array($3::text) THEN meotdc_learning_course_progress.completed_lessons
+             ELSE meotdc_learning_course_progress.completed_lessons || jsonb_build_array($3::text)
+           END) * 100.0 / $4
+         )::int),
+         updated_at = now()
+       RETURNING completed_lessons, progress`,
+      [courseId, studentId, lessonId, totalLessons],
+    );
+    const row = result.rows[0];
+    return { completedLessons: row.completed_lessons, progress: row.progress };
   }
 
   async listLearningSubmissions(assignmentIds: string[]) {
