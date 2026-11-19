@@ -38,7 +38,7 @@ Các alias `meotdc.localhost`, `student.meotdc.localhost`, `teacher.meotdc.local
 
 Để bật HTTPS công khai, trỏ mọi DNS về máy chủ rồi đặt `MEOTDC_DOMAINS=portal.example.com,exam.example.com` và `MEOTDC_WEB_ORIGINS=https://portal.example.com,https://exam.example.com`; với một domain vẫn hỗ trợ `MEOTDC_DOMAIN` cũ. Đăng ký từng HTTPS origin trong Google Web Client ID rồi chạy `docker compose --profile public up --build -d`. API production tự buộc cookie `Secure` và từ chối khởi động khi OAuth, email admin, secret database/object storage, HTTPS origins hoặc scanner chưa đạt yêu cầu cấu hình. Container web/API chạy bằng user không phải root.
 
-Compose dùng hai ảnh `vuongdeptraii2k8/meotdc-api` và `vuongdeptraii2k8/duantuonglai`. Script `scripts/publish-duantuonglai.ps1` build/push cả hai ảnh và kiểm tra tài khoản Docker Hub; `scripts/publish-docker.ps1` bổ sung kiểm tra `.env` production trước khi publish. Máy bàn giao chưa có Docker CLI/Engine nên chưa chạy build/push.
+Compose dùng hai ảnh `vuongdeptraii2k8/meotdc-api` và `vuongdeptraii2k8/duantuonglai`. Script `scripts/publish-duantuonglai.ps1` build/push cả hai ảnh và kiểm tra tài khoản Docker Hub; `scripts/publish-docker.ps1` bổ sung kiểm tra `.env` production trước khi publish. Máy có Docker CLI 29.9.3 nhưng Docker Desktop không khởi động được; WSL2 báo thiếu kernel và lệnh cập nhật chưa hoàn tất, nên chưa chạy build/push.
 
 | Vai trò thử nghiệm (chỉ `pnpm dev`) | Tài khoản | Mật khẩu demo |
 |---|---|---|
@@ -83,7 +83,7 @@ Dữ liệu khóa học và tiến độ người học hiện dùng API; Postgr
 3. Hoàn thiện chính sách chống gian lận, bảo vệ dữ liệu, hỗ trợ tiếp cận, rà soát con người và khiếu nại.
 4. Xác minh ClamAV/virus signatures, false positives và timeout; kiểm thử bảo mật, tải, khôi phục, mất mạng, thiết bị và khả năng tiếp cận; tổ chức pilot giả lập/UAT trước khi dùng dữ liệu thật.
 
-**Xác minh bản mã nguồn:** `pnpm build` thành công cho API và production Next.js. Smoke test API local không dùng DB đã xác nhận bắt đầu bị từ chối nếu thiếu cờ fullscreen, bắt đầu thành công khi có cờ, và heartbeat báo thoát fullscreen tự chốt lượt với lý do `fullscreen-exit`. Smoke test khóa học trước đó cũng xác nhận sinh viên đúng lớp đọc được khóa, đánh dấu bài học, đọc lại tiến độ 100%, và bị chặn khi truy cập chéo lớp. Test chạy bằng bộ nhớ API và tiến trình đã được dừng. Các luồng cũ về tạo/giao/nộp/chấm bài tập và nhập roster giả được ghi nhận ở lần kiểm tra trước. Migration `004_learning_courses.sql` chưa chạy trên PostgreSQL; Docker Desktop/CLI chưa sẵn sàng, nên scanner, Compose production, domain/DNS, backup/restore, tải và nghiệm thu bảo mật vẫn chưa được xác minh.
+**Xác minh bản mã nguồn:** `pnpm build` thành công cho API và production Next.js. Smoke test API local không dùng DB đã xác nhận bắt đầu bị từ chối nếu thiếu cờ fullscreen, bắt đầu thành công khi có cờ, và heartbeat báo thoát fullscreen tự chốt lượt với lý do `fullscreen-exit`. Smoke test khóa học trước đó cũng xác nhận sinh viên đúng lớp đọc được khóa, đánh dấu bài học, đọc lại tiến độ 100%, và bị chặn khi truy cập chéo lớp. Test chạy bằng bộ nhớ API và tiến trình đã được dừng. Các luồng cũ về tạo/giao/nộp/chấm bài tập và nhập roster giả được ghi nhận ở lần kiểm tra trước. Migration `004_learning_courses.sql` chưa chạy trên PostgreSQL; do Docker Desktop không khởi động, scanner, Compose production, domain/DNS, backup/restore, tải và nghiệm thu bảo mật vẫn chưa được xác minh.
 
 ## 7. Đề nghị quyết định sau buổi trình diễn
 

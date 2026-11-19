@@ -14,7 +14,7 @@
 
 - TypeScript build cho API chạy thành công sau các thay đổi.
 - Chưa chạy unit/E2E, thử giao diện, security review hoặc tải.
-- Docker CLI không có trong môi trường hiện tại, nên chưa chạy `docker compose up`, migration trên PostgreSQL thật hoặc luồng MinIO.
+- Docker CLI có trong môi trường, nhưng Docker Desktop không khởi động được: WSL2 báo thiếu kernel và các lệnh cập nhật chưa hoàn tất. Vì vậy chưa chạy `docker compose up`, migration trên PostgreSQL thật hoặc luồng MinIO.
 - Chưa đo tải đồng thời 5.000 người và chưa được TDC nghiệm thu.
 
 ## Giới hạn còn lại trước pilot có dữ liệu thật
