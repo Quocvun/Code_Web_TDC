@@ -1,0 +1,14 @@
+{
+  "name": "meotdc",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@11.25.0",
+  "scripts": {
+    "dev": "pnpm --parallel --stream --filter @meotdc/web --filter @meotdc/api dev",
+    "build": "pnpm --filter @meotdc/api build && pnpm --filter @meotdc/web build",
+    "dev:web": "pnpm --filter @meotdc/web dev",
+    "dev:api": "pnpm --filter @meotdc/api dev",
+    "db:up": "docker compose up -d postgres redis minio",
+    "db:down": "docker compose down"
+  }
+}

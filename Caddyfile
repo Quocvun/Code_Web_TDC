@@ -1,0 +1,4 @@
+{$MEOTDC_DOMAINS} {
+  encode zstd gzip
+  reverse_proxy web:3000
+}

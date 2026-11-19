@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 300" fill="none">
+  <defs><linearGradient id="bg" x1="70" y1="35" x2="570" y2="280" gradientUnits="userSpaceOnUse"><stop stop-color="#162B56"/><stop offset="1" stop-color="#087D93"/></linearGradient><linearGradient id="chip" x1="212" y1="84" x2="420" y2="226" gradientUnits="userSpaceOnUse"><stop stop-color="#7CF7D4"/><stop offset="1" stop-color="#81BBFF"/></linearGradient></defs>
+  <path fill="url(#bg)" d="M0 0h640v300H0z"/><circle cx="504" cy="64" r="112" fill="#36D8D1" fill-opacity=".12"/><circle cx="112" cy="270" r="128" fill="#7AB7FF" fill-opacity=".13"/>
+  <g stroke="#A8F8ED" stroke-opacity=".6" stroke-width="3"><path d="M55 78h115v46h53M66 223h110v-43h54M477 92h92v46h-58M476 218h107v-42h-69"/><path d="M108 60v18m70 147v28m363-114h25m-4 48v33"/></g>
+  <rect x="220" y="72" width="204" height="158" rx="30" fill="#0E2447" stroke="url(#chip)" stroke-width="6"/><rect x="253" y="103" width="138" height="97" rx="18" fill="#153D61" stroke="#70F0D0" stroke-opacity=".7" stroke-width="3"/><path d="m288 151 23-23 23 23-23 23m38-44-23 44" stroke="#A6FFE6" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+  <g fill="#B8FFF1"><circle cx="55" cy="78" r="6"/><circle cx="66" cy="223" r="6"/><circle cx="569" cy="92" r="6"/><circle cx="583" cy="218" r="6"/></g>
+</svg>
