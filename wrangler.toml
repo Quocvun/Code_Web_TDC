@@ -20,6 +20,7 @@ run_worker_first = ["/api/*"]
 [[d1_databases]]
 binding = "DB"
 database_name = "meotdc-db"
+database_id = "f723142c-40bc-4517-9ace-d8a1a2b5af67"
 
 [vars]
 CLOUDFLARE_WORKERS = "true"
