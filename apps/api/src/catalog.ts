@@ -74,8 +74,10 @@ export type MeoUser = {
   authProvider?: "google";
   major?: string;
   majorGroup?: string;
+  faculty?: string;
   studentCode?: string;
   className?: string;
+  classCodes?: string[];
 };
 
 export const demoPassword = "MeoTDC@2026";

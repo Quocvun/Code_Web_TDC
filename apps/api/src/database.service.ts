@@ -6,6 +6,7 @@ import { createHash } from "node:crypto";
 import type { MeoUser } from "./catalog";
 
 export type PersistedRosterAccount = { user: MeoUser; salt: Buffer; passwordHash: Buffer };
+export type InstitutionClassRecord = { id: string; code: string; name: string; major: string; course: string; faculty: string; ownerId: string; teacherId: string; teacherName: string; createdAt: string };
 export type RuntimeStateWriter = (state: unknown) => Promise<void>;
 export type PersistedSubmissionFile = { fileId: string; assignmentId: string; ownerId: string; originalName: string; contentType: string; size: number; storedName: string; createdAt: string };
 export type LearningAssignmentRecord = { id: string; ownerId: string; title: string; course: string; className: string; description: string; dueAt: string; points: number; published: boolean; createdAt: string };
@@ -128,6 +129,38 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
          password_salt = EXCLUDED.password_salt, password_hash = EXCLUDED.password_hash, updated_at = now()`,
       [JSON.stringify(rows)],
     );
+  }
+
+  async deleteRosterAccount(username: string) {
+    if (this.pool) await this.query("DELETE FROM meotdc_roster_accounts WHERE username = $1", [username.toLowerCase()]);
+  }
+
+  async deleteSessionsForUser(userId: string) {
+    if (this.pool) await this.query("DELETE FROM meotdc_sessions WHERE user_payload->>'id' = $1", [userId]);
+  }
+
+  async listInstitutionClasses(ownerId?: string) {
+    if (!this.pool) return [];
+    const result = await this.query<{ record_payload: InstitutionClassRecord }>(
+      "SELECT record_payload FROM meotdc_institution_classes WHERE ($1::text IS NULL OR owner_id = $1) ORDER BY created_at DESC",
+      [ownerId || null],
+    );
+    return result.rows.map((row) => row.record_payload);
+  }
+
+  async saveInstitutionClass(record: InstitutionClassRecord) {
+    if (!this.pool) return;
+    await this.query(
+      `INSERT INTO meotdc_institution_classes (id, class_code, owner_id, record_payload, created_at)
+       VALUES ($1, $2, $3, $4::jsonb, $5)
+       ON CONFLICT (id) DO UPDATE SET class_code = EXCLUDED.class_code, owner_id = EXCLUDED.owner_id,
+         record_payload = EXCLUDED.record_payload, created_at = EXCLUDED.created_at`,
+      [record.id, record.code, record.ownerId, JSON.stringify(record), record.createdAt],
+    );
+  }
+
+  async deleteInstitutionClass(id: string) {
+    if (this.pool) await this.query("DELETE FROM meotdc_institution_classes WHERE id = $1", [id]);
   }
 
   async createSession(sessionHash: string, user: MeoUser, expiresAt: number) {

@@ -1,6 +1,6 @@
 import { Injectable, OnModuleInit } from "@nestjs/common";
 import { createHash } from "node:crypto";
-import { DatabaseService, type LearningAssignmentRecord, type LearningCourseProgressRecord, type LearningCourseRecord, type LearningSubmissionRecord, type PersistedRosterAccount, type PersistedSubmissionFile, type RuntimeStateWriter } from "./database.service";
+import { DatabaseService, type InstitutionClassRecord, type LearningAssignmentRecord, type LearningCourseProgressRecord, type LearningCourseRecord, type LearningSubmissionRecord, type PersistedRosterAccount, type PersistedSubmissionFile, type RuntimeStateWriter } from "./database.service";
 import { getCloudflareDatabase, type D1DatabaseBinding } from "./cloudflare-runtime";
 import type { MeoUser } from "./catalog";
 
@@ -167,6 +167,29 @@ export class CloudflareDatabaseService extends DatabaseService implements OnModu
       ).bind(username, JSON.stringify({ user: account.user, salt: account.salt.toString("hex"), passwordHash: account.passwordHash.toString("hex") }), account.user.email?.toLowerCase() || null, account.user.id));
       await this.d1.batch(statements);
     }
+  }
+
+  async deleteRosterAccount(username: string) {
+    await this.d1.prepare("DELETE FROM meotdc_kv WHERE namespace = 'roster' AND record_key = ?").bind(username.toLowerCase()).run();
+  }
+
+  async deleteSessionsForUser(userId: string) {
+    await this.d1.prepare("DELETE FROM meotdc_kv WHERE namespace = 'session' AND owner_id = ?").bind(userId).run();
+  }
+
+  async listInstitutionClasses(ownerId?: string) {
+    const rows = ownerId
+      ? await this.all("SELECT record_json FROM meotdc_kv WHERE namespace = 'institution_class' AND owner_id = ? ORDER BY created_at DESC", [ownerId])
+      : await this.all("SELECT record_json FROM meotdc_kv WHERE namespace = 'institution_class' ORDER BY created_at DESC");
+    return rows.map((row) => JSON.parse((row as D1Row).record_json) as InstitutionClassRecord);
+  }
+
+  async saveInstitutionClass(record: InstitutionClassRecord) {
+    await this.put("institution_class", record.id, record, { owner_id: record.ownerId, class_name: record.code, course_code: record.course, created_at: record.createdAt });
+  }
+
+  async deleteInstitutionClass(id: string) {
+    await this.d1.prepare("DELETE FROM meotdc_kv WHERE namespace = 'institution_class' AND record_key = ?").bind(id).run();
   }
 
   async createSession(sessionHash: string, user: MeoUser, expiresAt: number) {

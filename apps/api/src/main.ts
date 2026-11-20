@@ -10,7 +10,7 @@ import { demoAccounts, demoPassword, getMajorCatalog, majors, type MeoUser } fro
 import { CloudflareDatabaseService } from "./cloudflare-database.service";
 import { hasCloudflareDatabase } from "./cloudflare-runtime";
 import { ExamRuntimeService } from "./exam-runtime.service";
-import { DatabaseService, type LearningAssignmentRecord, type LearningCourseRecord, type LearningSubmissionRecord, type PersistedRosterAccount, type PersistedSubmissionFile } from "./database.service";
+import { DatabaseService, type InstitutionClassRecord, type LearningAssignmentRecord, type LearningCourseRecord, type LearningSubmissionRecord, type PersistedRosterAccount, type PersistedSubmissionFile } from "./database.service";
 import { ObjectStorageService } from "./object-storage.service";
 import { FileScannerService } from "./file-scanner.service";
 
@@ -162,6 +162,11 @@ function hashRosterPassword(password: string, salt: Buffer) {
   return scryptSync(password, salt, 64);
 }
 
+function teacherUsername(fullName: string) {
+  const slug = fullName.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[đĐ]/g, "d").toLowerCase().replace(/[^a-z0-9]+/g, ".").replace(/^\.|\.$/g, "").slice(0, 68);
+  return `gv.${slug || "tdc"}`;
+}
+
 function authFailureKey(request: RequestLike, identifier: string) {
   return `${request.ip || "unknown"}:${identifier}`;
 }
@@ -216,7 +221,14 @@ async function getSession(request: RequestLike, database: DatabaseService) {
   const key = sessionHash(id);
   const session = database.enabled ? await database.getSession(key) : sessions.get(key);
   if (!session || session.expiresAt <= Date.now()) { sessions.delete(key); if (database.enabled) await database.deleteSession(key); return null; }
-  return { key, ...session };
+  let user = session.user;
+  if (user.role === "teacher") {
+    const account = database.enabled
+      ? await database.getRosterAccount(user.username)
+      : null;
+    if (account) user = { ...user, faculty: account.user.faculty, classCodes: account.user.classCodes || [] };
+  }
+  return { key, user, expiresAt: session.expiresAt };
 }
 
 async function requireAuthenticatedSession(request: RequestLike, database: DatabaseService) {
@@ -269,6 +281,7 @@ class AppController {
   private readonly submissionFiles = new Map<string, StoredAssignmentFile>();
   private readonly learningAssignments = new Map<string, LearningAssignmentRecord>();
   private readonly learningCourses = new Map<string, LearningCourseRecord>();
+  private readonly institutionClasses = new Map<string, InstitutionClassRecord>();
   private readonly courseProgress = new Map<string, { completedLessons: string[]; progress: number }>();
   private readonly learningSubmissions = new Map<string, LearningSubmissionRecord>();
   private submissionFilesReady: Promise<void> | null = null;
@@ -292,6 +305,7 @@ class AppController {
   private teacherHasClassAccess(user: MeoUser, className: string) {
     if (!enforceProductionAccessControls() || user.role !== "teacher") return true;
     const email = user.email?.trim().toLowerCase();
+    if (user.classCodes?.includes(className)) return true;
     if (!email || !className.trim()) return false;
     return (process.env.MEOTDC_TEACHER_CLASS_ASSIGNMENTS || "").split(";").some((entry) => {
       const separator = entry.indexOf("=");
@@ -571,7 +585,7 @@ class AppController {
   @Get("catalog/classes")
   async listAcademicClasses(@Req() request: RequestLike) {
     const user = await requireAuthenticatedSession(request, this.database);
-    const known = new Map<string, { courses: Set<string>; students: Map<string, MeoUser> }>();
+    const known = new Map<string, { courses: Set<string>; students: Map<string, MeoUser>; record?: InstitutionClassRecord }>();
     const ensure = (code: string) => {
       const normalized = code.trim().slice(0, 80);
       if (!normalized) return null;
@@ -579,6 +593,16 @@ class AppController {
       known.set(normalized, existing);
       return existing;
     };
+    const storedClasses = this.database.enabled
+      ? await this.database.listInstitutionClasses(user.role === "teacher" ? user.id : undefined)
+      : [...this.institutionClasses.values()].filter((record) => user.role !== "teacher" || record.ownerId === user.id);
+    for (const record of storedClasses) {
+      const entry = ensure(record.code);
+      if (entry) {
+        entry.record = record;
+        if (record.course) entry.courses.add(record.course);
+      }
+    }
     if (user.role === "school" || user.role === "admin" || user.role === "teacher") {
       const roster = this.database.enabled ? await this.database.listRosterAccounts() : [...this.rosterAccounts.values()];
       for (const { user: student } of roster) {
@@ -612,17 +636,143 @@ class AppController {
         if (student.email) studentEmails[student.fullName] = student.email;
       }
       return {
-        id: `server-class-${encodeURIComponent(code)}`,
+        id: details.record?.id || `server-class-${encodeURIComponent(code)}`,
         code,
-        name: code,
-        major: students.find((student) => student.major)?.major || "",
+        name: details.record?.name || code,
+        major: details.record?.major || students.find((student) => student.major)?.major || "",
         course: [...details.courses][0] || "Chưa gán học phần chính thức",
-        teacher: user.role === "teacher" ? user.fullName : "",
+        teacher: details.record?.teacherName || (user.role === "teacher" ? user.fullName : ""),
+        faculty: details.record?.faculty || "",
+        ownerId: details.record?.ownerId || "",
         students: students.map((student) => student.fullName),
         studentCodes,
         studentEmails,
       };
     });
+  }
+
+  @Post("classes")
+  async createAcademicClass(@Req() request: RequestLike, @Body() body: Record<string, unknown>) {
+    const user = await requireAuthenticatedSession(request, this.database);
+    if (!body || typeof body !== "object" || Array.isArray(body)) throw new BadRequestException("Thông tin lớp không hợp lệ.");
+    if (!["teacher", "school", "admin"].includes(user.role)) throw new ForbiddenException("Chỉ giảng viên hoặc nhà trường được tạo lớp.");
+    const code = typeof body.code === "string" ? body.code.trim().toUpperCase().slice(0, 80) : "";
+    const name = typeof body.name === "string" ? body.name.trim().slice(0, 140) : "";
+    const major = typeof body.major === "string" ? body.major.trim().slice(0, 120) : "";
+    const course = typeof body.course === "string" ? body.course.trim().slice(0, 120) : "";
+    if (!/^[\p{L}\p{N}._ -]{2,80}$/u.test(code) || !name) throw new BadRequestException("Mã lớp và tên lớp là bắt buộc.");
+    const stored = this.database.enabled ? await this.database.listInstitutionClasses() : [...this.institutionClasses.values()];
+    if (stored.some((record) => record.code.toLocaleLowerCase("vi-VN") === code.toLocaleLowerCase("vi-VN"))) throw new BadRequestException("Mã lớp đã tồn tại.");
+    const teachers = this.database.enabled ? await this.database.listRosterAccounts() : [...this.rosterAccounts.values()];
+    const teacher = user.role === "teacher"
+      ? user
+      : teachers.find((record) => record.user.id === body.teacherId && record.user.role === "teacher")?.user;
+    if (!teacher) throw new BadRequestException("Hãy chọn tài khoản giảng viên phụ trách lớp.");
+    const record: InstitutionClassRecord = {
+      id: randomUUID(), code, name, major, course,
+      faculty: teacher.faculty || (typeof body.faculty === "string" ? body.faculty.trim().slice(0, 120) : ""),
+      ownerId: teacher.id, teacherId: teacher.id, teacherName: teacher.fullName, createdAt: new Date().toISOString(),
+    };
+    if (this.database.enabled) {
+      await this.database.saveInstitutionClass(record);
+      const account = teachers.find((entry) => entry.user.id === teacher.id);
+      if (account) {
+        const next = { ...account, user: { ...account.user, classCodes: [...new Set([...(account.user.classCodes || []), code])] } };
+        await this.database.saveRosterAccounts([{ username: account.user.username, account: next }]);
+      }
+    } else {
+      this.institutionClasses.set(record.id, record);
+      const account = [...this.rosterAccounts.entries()].find(([, entry]) => entry.user.id === teacher.id);
+      if (account) this.rosterAccounts.set(account[0], { ...account[1], user: { ...account[1].user, classCodes: [...new Set([...(account[1].user.classCodes || []), code])] } });
+    }
+    return { class: record };
+  }
+
+  @Post("auth/teacher-accounts")
+  async provisionTeacherAccounts(@Req() request: RequestLike, @Body() body: Record<string, unknown>) {
+    await requireInstitutionSession(request, this.database);
+    const rows = Array.isArray(body?.teachers) ? body.teachers : [];
+    if (rows.length === 0 || rows.length > 1000) throw new BadRequestException("Cần danh sách từ 1 đến 1.000 giảng viên.");
+    const accounts = this.database.enabled ? await this.database.listRosterAccounts() : [...this.rosterAccounts.values()];
+    const byUsername = new Map(accounts.map((account) => [account.user.username.toLowerCase(), account]));
+    const byEmail = new Map(accounts.filter((account) => account.user.email).map((account) => [account.user.email!.toLowerCase(), account.user.username.toLowerCase()]));
+    const submittedEmails = new Set<string>();
+    const changed = new Map<string, PersistedRosterAccount>();
+    const results: Array<{ username: string; initialPassword?: string; fullName: string; faculty: string; email?: string; status: "created" | "already-exists" }> = [];
+    for (const item of rows) {
+      if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+      const row = item as Record<string, unknown>;
+      const fullName = typeof row.fullName === "string" ? row.fullName.trim().replace(/\s+/g, " ").slice(0, 120) : "";
+      const faculty = typeof row.faculty === "string" ? row.faculty.trim().slice(0, 120) : "";
+      const email = typeof row.email === "string" ? row.email.trim().toLowerCase().slice(0, 254) : "";
+      let username = typeof row.username === "string" ? row.username.trim().toLowerCase() : "";
+      if (!fullName || !faculty || (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))) continue;
+      if (!username) {
+        const base = teacherUsername(fullName);
+        username = base;
+        let suffix = 2;
+        while (byUsername.has(username)) username = `${base}.${suffix++}`;
+      }
+      if (!/^[a-z0-9._-]{3,80}$/.test(username)) throw new BadRequestException("Tên đăng nhập giảng viên chỉ được dùng chữ thường, số, dấu chấm, gạch ngang hoặc gạch dưới.");
+      if (email && submittedEmails.has(email)) throw new BadRequestException("Email giảng viên bị trùng trong danh sách.");
+      if (email) submittedEmails.add(email);
+      const existing = byUsername.get(username);
+      if (existing) {
+        if (existing.user.role !== "teacher") throw new BadRequestException(`Tên đăng nhập ${username} đã thuộc vai trò khác.`);
+        results.push({ username, fullName: existing.user.fullName, faculty: existing.user.faculty || faculty, email: existing.user.email, status: "already-exists" });
+        continue;
+      }
+      if (email && byEmail.has(email)) throw new BadRequestException(`Email ${email} đã được gắn với tài khoản ${byEmail.get(email)}.`);
+      const initialPassword = randomBytes(18).toString("base64url");
+      const salt = randomBytes(16);
+      const user: MeoUser = { id: `teacher-${randomUUID()}`, username, fullName, role: "teacher", faculty, ...(email ? { email } : {}) };
+      const account = { user, salt, passwordHash: hashRosterPassword(initialPassword, salt) };
+      byUsername.set(username, account);
+      if (email) byEmail.set(email, username);
+      changed.set(username, account);
+      results.push({ username, initialPassword, fullName, faculty, email: user.email, status: "created" });
+    }
+    if (this.database.enabled) await this.database.saveRosterAccounts([...changed].map(([username, account]) => ({ username, account })));
+    else for (const [username, account] of changed) this.rosterAccounts.set(username, account);
+    return { created: results.filter((item) => item.status === "created").length, alreadyExists: results.filter((item) => item.status === "already-exists").length, accounts: results };
+  }
+
+  @Get("auth/teacher-accounts")
+  async listTeacherAccounts(@Req() request: RequestLike) {
+    await requireInstitutionSession(request, this.database);
+    const accounts = this.database.enabled ? await this.database.listRosterAccounts() : [...this.rosterAccounts.values()];
+    return accounts.map(({ user }) => user).filter((user) => user.role === "teacher").sort((a, b) => a.fullName.localeCompare(b.fullName, "vi"));
+  }
+
+  @Post("auth/teacher-accounts/:username/reset-password")
+  async resetTeacherPassword(@Req() request: RequestLike, @Param("username") usernameValue: string) {
+    await requireInstitutionSession(request, this.database);
+    const username = usernameValue.trim().toLowerCase();
+    const account = this.database.enabled ? await this.database.getRosterAccount(username) : this.rosterAccounts.get(username) || null;
+    if (!account || account.user.role !== "teacher") throw new NotFoundException("Không tìm thấy tài khoản giảng viên.");
+    const initialPassword = randomBytes(18).toString("base64url");
+    const salt = randomBytes(16);
+    const updated = { ...account, salt, passwordHash: hashRosterPassword(initialPassword, salt) };
+    if (this.database.enabled) {
+      await this.database.saveRosterAccounts([{ username, account: updated }]);
+      await this.database.deleteSessionsForUser(account.user.id);
+    } else {
+      this.rosterAccounts.set(username, updated);
+    }
+    return { username, initialPassword };
+  }
+
+  @Post("auth/teacher-accounts/:username/delete")
+  async deleteTeacherAccount(@Req() request: RequestLike, @Param("username") usernameValue: string) {
+    await requireInstitutionSession(request, this.database);
+    const username = usernameValue.trim().toLowerCase();
+    const account = this.database.enabled ? await this.database.getRosterAccount(username) : this.rosterAccounts.get(username) || null;
+    if (!account || account.user.role !== "teacher") throw new NotFoundException("Không tìm thấy tài khoản giảng viên.");
+    if (this.database.enabled) {
+      await this.database.deleteRosterAccount(username);
+      await this.database.deleteSessionsForUser(account.user.id);
+    } else this.rosterAccounts.delete(username);
+    return { ok: true };
   }
 
   @Get("auth/demo-accounts")
@@ -635,7 +785,7 @@ class AppController {
   async listRosterAccounts(@Req() request: RequestLike) {
     await requireInstitutionSession(request, this.database);
     const accounts = this.database.enabled ? await this.database.listRosterAccounts() : [...this.rosterAccounts.values()];
-    return accounts.map(({ user }) => user);
+    return accounts.map(({ user }) => user).filter((user) => user.role === "student");
   }
 
   @Post("auth/roster-accounts")
@@ -790,7 +940,8 @@ class AppController {
     const linkedRosterAccount = this.database.enabled
       ? await this.database.getRosterAccountByEmail(identity.email)
       : [...this.rosterAccounts.values()].find(({ user }) => user.email?.toLowerCase() === identity.email);
-    if (enforceProductionAccessControls() && !isAdmin && !isTeacher && !isSchool && !linkedRosterAccount) throw new UnauthorizedException("Email này chưa được nhà trường cấp quyền hoặc liên kết roster.");
+    const allowGoogleStudents = process.env.MEOTDC_ALLOW_GOOGLE_STUDENTS === "true";
+    if (enforceProductionAccessControls() && !isAdmin && !isTeacher && !isSchool && !linkedRosterAccount && !allowGoogleStudents) throw new UnauthorizedException("Email này chưa được nhà trường cấp quyền hoặc liên kết roster.");
     const user: MeoUser = isAdmin ? {
       id: "system-admin",
       username: "admin",
@@ -818,7 +969,7 @@ class AppController {
       role: "student",
       email: identity.email,
       authProvider: "google",
-      className: "Toàn trường (mô phỏng)",
+      ...(isCloudflareDemo() ? { className: "Toàn trường (mô phỏng)" } : {}),
     };
     const sessionId = randomBytes(32).toString("base64url");
     const expiresAt = Date.now() + sessionLifetimeMs;

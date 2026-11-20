@@ -3,7 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const env = { ...process.env, CLOUDFLARE_STATIC_EXPORT: "1", NEXT_PUBLIC_DEMO_MODE: "true", NODE_ENV: "production" };
+const env = { ...process.env, CLOUDFLARE_STATIC_EXPORT: "1", NEXT_PUBLIC_DEMO_MODE: "false", NODE_ENV: "production" };
 function run(command, args, cwd) {
   const result = spawnSync(command, args, { cwd, env, stdio: "inherit" });
   if (result.error) throw result.error;

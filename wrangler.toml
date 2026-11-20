@@ -21,8 +21,10 @@ run_worker_first = ["/api/*"]
 binding = "DB"
 database_name = "meotdc-db"
 database_id = "f723142c-40bc-4517-9ace-d8a1a2b5af67"
+migrations_dir = "apps/api/d1-migrations"
 
 [vars]
 CLOUDFLARE_WORKERS = "true"
-MEOTDC_DEMO_MODE = "true"
+MEOTDC_DEMO_MODE = "false"
+MEOTDC_ALLOW_GOOGLE_STUDENTS = "true"
 NODE_ENV = "production"
