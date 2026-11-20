@@ -6,15 +6,25 @@ export class FileScannerService implements OnModuleInit {
   private readonly host = process.env.CLAMAV_HOST?.trim() || "";
   private readonly port = Number(process.env.CLAMAV_PORT || 3310);
   private readonly required = process.env.FILE_SCAN_REQUIRED === "true";
+  private readonly remoteUrl = process.env.CLAMAV_SCAN_URL?.trim().replace(/\/$/, "") || "";
+  private readonly remoteToken = process.env.CLAMAV_SCAN_TOKEN?.trim() || "";
 
   onModuleInit() {
     if (process.env.NODE_ENV === "production" && process.env.CLOUDFLARE_WORKERS !== "true" && !this.required) throw new Error("FILE_SCAN_REQUIRED=true là bắt buộc khi NODE_ENV=production.");
     if (this.required && (!this.host || !Number.isInteger(this.port) || this.port < 1 || this.port > 65535)) throw new Error("Cấu hình CLAMAV_HOST/CLAMAV_PORT không hợp lệ.");
+    if (process.env.CLOUDFLARE_WORKERS === "true") {
+      if (Boolean(this.remoteUrl) !== Boolean(this.remoteToken)) throw new Error("CLAMAV_SCAN_URL và CLAMAV_SCAN_TOKEN phải được cấu hình cùng nhau.");
+      if (this.remoteUrl && new URL(this.remoteUrl).protocol !== "https:") throw new Error("CLAMAV_SCAN_URL phải dùng HTTPS.");
+    }
   }
 
   async scan(buffer: Buffer) {
     if (!this.host) {
-      if (process.env.CLOUDFLARE_WORKERS === "true") throw new ServiceUnavailableException("Tải tệp đang tắt trên bản Cloudflare vì chưa có bộ quét mã độc.");
+      if (process.env.CLOUDFLARE_WORKERS === "true") {
+        if (!this.remoteUrl || !this.remoteToken) throw new ServiceUnavailableException("Tải tệp đang tắt trên bản Cloudflare vì chưa có bộ quét mã độc.");
+        await this.scanRemote(buffer);
+        return "clean";
+      }
       if (this.required) throw new ServiceUnavailableException("Dịch vụ quét mã độc chưa được cấu hình.");
       return "skipped-local-demo";
     }
@@ -22,7 +32,37 @@ export class FileScannerService implements OnModuleInit {
     return "clean";
   }
 
-  health() { return this.host ? "clamav-required" : process.env.CLOUDFLARE_WORKERS === "true" ? "uploads-disabled-no-clamav" : "local-demo-scan-disabled"; }
+  async health() {
+    if (this.host) return "clamav-required";
+    if (process.env.CLOUDFLARE_WORKERS !== "true") return "local-demo-scan-disabled";
+    if (!this.remoteUrl || !this.remoteToken) return "uploads-disabled-no-clamav";
+    try {
+      const response = await fetch(`${this.remoteUrl}/health`, { headers: { Authorization: `Bearer ${this.remoteToken}` }, signal: AbortSignal.timeout(4000) });
+      return response.ok ? "clamav-remote" : "clamav-remote-unavailable";
+    } catch {
+      return "clamav-remote-unavailable";
+    }
+  }
+
+  private async scanRemote(buffer: Buffer) {
+    const body = new ArrayBuffer(buffer.byteLength);
+    new Uint8Array(body).set(buffer);
+    let response: Response;
+    try {
+      response = await fetch(`${this.remoteUrl}/scan`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${this.remoteToken}`, "Content-Type": "application/octet-stream" },
+        body,
+        signal: AbortSignal.timeout(30_000),
+      });
+    } catch {
+      throw new ServiceUnavailableException("Không kết nối được dịch vụ quét mã độc.");
+    }
+    if (response.ok) return;
+    if (response.status === 422) throw new BadRequestException("Tệp bị chặn vì bộ quét phát hiện nội dung độc hại.");
+    if (response.status === 413) throw new BadRequestException("Tệp vượt quá giới hạn quét mã độc.");
+    throw new ServiceUnavailableException("Dịch vụ quét mã độc không xử lý được tệp.");
+  }
 
   private scanWithClamAv(buffer: Buffer) {
     return new Promise<void>((resolve, reject) => {

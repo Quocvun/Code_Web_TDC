@@ -25,18 +25,18 @@ services:
       - meotdc-redis:/data
     command: ["redis-server", "--appendonly", "yes"]
 
-  minio:
-    image: minio/minio:latest
+  objectstore:
+    image: chrislusf/seaweedfs:latest
     restart: unless-stopped
-    command: server /data --console-address ":9001"
+    command: ["mini", "-dir=/data", "-s3.port=9000"]
     environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-meotdc}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?Create .env and set MINIO_ROOT_PASSWORD}
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-meotdc}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?Create .env.clamav and set MINIO_ROOT_PASSWORD}
+      S3_BUCKET: ${S3_BUCKET:-meotdc-submissions}
     ports:
       - "127.0.0.1:9000:9000"
-      - "127.0.0.1:9001:9001"
     volumes:
-      - meotdc-files:/data
+      - meotdc-seaweedfs:/data
 
   clamav:
     image: clamav/clamav:stable
@@ -45,6 +45,39 @@ services:
       - "3310"
     volumes:
       - meotdc-clamav-db:/var/lib/clamav
+
+  clamav-gateway:
+    image: node:22-alpine
+    profiles: [cloudflare-bridge]
+    restart: unless-stopped
+    command: ["node", "/app/clamav-gateway.mjs"]
+    environment:
+      CLAMAV_GATEWAY_TOKEN: ${CLAMAV_GATEWAY_TOKEN:?Create .env.clamav and set CLAMAV_GATEWAY_TOKEN}
+      CLAMAV_HOST: clamav
+      CLAMAV_PORT: "3310"
+    expose:
+      - "8080"
+    volumes:
+      - ./apps/api/src/clamav-gateway.mjs:/app/clamav-gateway.mjs:ro
+    depends_on:
+      clamav:
+        condition: service_started
+
+  cloudflared-scanner:
+    image: cloudflare/cloudflared:latest
+    profiles: [cloudflare-bridge]
+    restart: unless-stopped
+    command: ["tunnel", "--no-autoupdate", "--url", "http://clamav-gateway:8080"]
+    depends_on:
+      - clamav-gateway
+
+  cloudflared-storage:
+    image: cloudflare/cloudflared:latest
+    profiles: [cloudflare-bridge]
+    restart: unless-stopped
+    command: ["tunnel", "--no-autoupdate", "--url", "http://objectstore:9000"]
+    depends_on:
+      - objectstore
 
   api:
     image: ${DOCKERHUB_USERNAME:-vuongdeptraii2k8}/meotdc-api:${MEOTDC_IMAGE_TAG:-latest}
@@ -59,7 +92,7 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-meotdc}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-meotdc}
       DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-20}
       DATABASE_SSL: "false"
-      S3_ENDPOINT: http://minio:9000
+      S3_ENDPOINT: http://objectstore:9000
       S3_ENABLED: "true"
       S3_BUCKET: ${S3_BUCKET:-meotdc-submissions}
       S3_ACCESS_KEY: ${MINIO_ROOT_USER:-meotdc}
@@ -85,7 +118,7 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      minio:
+      objectstore:
         condition: service_started
       clamav:
         condition: service_started
@@ -144,6 +177,7 @@ volumes:
   meotdc-postgres:
   meotdc-redis:
   meotdc-files:
+  meotdc-seaweedfs:
   meotdc-clamav-db:
   meotdc-uploads:
   meotdc-caddy-data:

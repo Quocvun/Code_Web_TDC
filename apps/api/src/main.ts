@@ -857,7 +857,7 @@ class AppController {
 
   @Get("health")
   async health() {
-    return { status: "ok", service: "meotdc-api", persistence: await this.database.health(), fileStorage: this.objectStorage.health(), fileScan: this.fileScanner.health(), now: new Date().toISOString() };
+    return { status: "ok", service: "meotdc-api", persistence: await this.database.health(), fileStorage: this.objectStorage.health(), fileScan: await this.fileScanner.health(), now: new Date().toISOString() };
   }
 
   @Get("overview")

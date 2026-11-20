@@ -9,7 +9,7 @@
     "build:cloudflare": "node scripts/build-cloudflare.mjs",
     "dev:web": "pnpm --filter @meotdc/web dev",
     "dev:api": "pnpm --filter @meotdc/api dev",
-    "db:up": "docker compose up -d postgres redis minio",
+    "db:up": "docker compose up -d postgres redis objectstore",
     "db:down": "docker compose down"
   }
 }
