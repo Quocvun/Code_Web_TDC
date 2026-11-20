@@ -37,7 +37,7 @@ export class FileScannerService implements OnModuleInit {
     if (process.env.CLOUDFLARE_WORKERS !== "true") return "local-demo-scan-disabled";
     if (!this.remoteUrl || !this.remoteToken) return "uploads-disabled-no-clamav";
     try {
-      const response = await fetch(`${this.remoteUrl}/health`, { headers: { Authorization: `Bearer ${this.remoteToken}` }, signal: AbortSignal.timeout(4000) });
+      const response = await fetch(`${this.remoteUrl}/health`, { headers: { Authorization: `Bearer ${this.remoteToken}` }, signal: AbortSignal.timeout(15000) });
       return response.ok ? "clamav-remote" : "clamav-remote-unavailable";
     } catch {
       return "clamav-remote-unavailable";
