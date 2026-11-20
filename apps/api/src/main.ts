@@ -1042,7 +1042,7 @@ class AppController {
       publishedExams: exams.filter((exam) => exam.published !== false).length,
       publishedAssignments: assignments.filter((assignment) => assignment.published).length,
       pendingGrading: submissions.filter((submission) => submission.status === "submitted").length + pendingEssayAttempts,
-      metricsStatus: this.database.enabled ? "postgres" : "demo-memory",
+      metricsStatus: hasCloudflareDatabase() ? "cloudflare-d1" : this.database.enabled ? "postgres" : "demo-memory",
       updatedAt: new Date().toISOString(),
     };
   }
