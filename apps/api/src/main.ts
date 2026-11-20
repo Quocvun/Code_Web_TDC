@@ -1,5 +1,5 @@
 import "reflect-metadata";
-import { constants, createHash, createPublicKey, randomBytes, randomUUID, scryptSync, timingSafeEqual, verify as verifySignature } from "node:crypto";
+import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { mkdir, readFile, readdir, writeFile, unlink } from "node:fs/promises";
 import { extname, join, resolve } from "node:path";
@@ -138,8 +138,8 @@ async function verifyGoogleIdToken(token: string, nonce: string, clientId: strin
   }
   if (header.alg !== "RS256" || typeof header.kid !== "string") throw new UnauthorizedException("Thuật toán ký token Google không hợp lệ.");
   const signingKey = await getGoogleSigningKey(header.kid);
-  const publicKey = createPublicKey({ key: signingKey, format: "jwk" });
-  const validSignature = verifySignature("RSA-SHA256", Buffer.from(`${parts[0]}.${parts[1]}`), { key: publicKey, padding: constants.RSA_PKCS1_PADDING }, Buffer.from(parts[2], "base64url"));
+  const publicKey = await crypto.subtle.importKey("jwk", signingKey, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, false, ["verify"]);
+  const validSignature = await crypto.subtle.verify("RSASSA-PKCS1-v1_5", publicKey, Buffer.from(parts[2], "base64url"), Buffer.from(`${parts[0]}.${parts[1]}`));
   const now = Math.floor(Date.now() / 1000);
   const audiences = typeof claims.aud === "string" ? [claims.aud] : Array.isArray(claims.aud) ? claims.aud : [];
   if (!validSignature || !["accounts.google.com", "https://accounts.google.com"].includes(String(claims.iss))) throw new UnauthorizedException("Không thể xác minh tài khoản Google này.");
