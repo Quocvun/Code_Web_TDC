@@ -8,12 +8,13 @@ export class FileScannerService implements OnModuleInit {
   private readonly required = process.env.FILE_SCAN_REQUIRED === "true";
 
   onModuleInit() {
-    if (process.env.NODE_ENV === "production" && !this.required) throw new Error("FILE_SCAN_REQUIRED=true là bắt buộc khi NODE_ENV=production.");
+    if (process.env.NODE_ENV === "production" && process.env.CLOUDFLARE_WORKERS !== "true" && !this.required) throw new Error("FILE_SCAN_REQUIRED=true là bắt buộc khi NODE_ENV=production.");
     if (this.required && (!this.host || !Number.isInteger(this.port) || this.port < 1 || this.port > 65535)) throw new Error("Cấu hình CLAMAV_HOST/CLAMAV_PORT không hợp lệ.");
   }
 
   async scan(buffer: Buffer) {
     if (!this.host) {
+      if (process.env.CLOUDFLARE_WORKERS === "true") throw new ServiceUnavailableException("Tải tệp đang tắt trên bản Cloudflare vì chưa có bộ quét mã độc.");
       if (this.required) throw new ServiceUnavailableException("Dịch vụ quét mã độc chưa được cấu hình.");
       return "skipped-local-demo";
     }
@@ -21,7 +22,7 @@ export class FileScannerService implements OnModuleInit {
     return "clean";
   }
 
-  health() { return this.host ? "clamav-required" : "local-demo-scan-disabled"; }
+  health() { return this.host ? "clamav-required" : process.env.CLOUDFLARE_WORKERS === "true" ? "uploads-disabled-no-clamav" : "local-demo-scan-disabled"; }
 
   private scanWithClamAv(buffer: Buffer) {
     return new Promise<void>((resolve, reject) => {

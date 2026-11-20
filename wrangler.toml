@@ -1,0 +1,27 @@
+name = "meotdc"
+main = "apps/api/src/cloudflare-entry.mjs"
+compatibility_date = "2026-11-20"
+compatibility_flags = ["nodejs_compat", "nodejs_compat_populate_process_env"]
+workers_dev = true
+
+[alias]
+"@nestjs/microservices" = "./apps/api/src/cloudflare-unused-module.mjs"
+"@nestjs/microservices/microservices-module" = "./apps/api/src/cloudflare-unused-module.mjs"
+"@nestjs/websockets/socket-module" = "./apps/api/src/cloudflare-unused-module.mjs"
+class-transformer = "./apps/api/src/cloudflare-unused-module.mjs"
+class-validator = "./apps/api/src/cloudflare-unused-module.mjs"
+
+[assets]
+directory = "./apps/web/out"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+run_worker_first = ["/api/*"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "meotdc-db"
+
+[vars]
+CLOUDFLARE_WORKERS = "true"
+MEOTDC_DEMO_MODE = "true"
+NODE_ENV = "production"

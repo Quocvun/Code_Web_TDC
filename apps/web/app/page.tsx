@@ -68,7 +68,7 @@ declare global {
 
 const roleNames: Record<UserRole, string> = { student: "Sinh viên", teacher: "Giảng viên", school: "Nhà trường", admin: "Quản trị viên" };
 const questionDifficultyLabels: QuestionDifficulty[] = ["Nhận biết", "Thông hiểu", "Vận dụng", "Vận dụng cao"];
-const demoMode = process.env.NODE_ENV !== "production";
+const demoMode = process.env.NODE_ENV !== "production" || process.env.NEXT_PUBLIC_DEMO_MODE === "true";
 const demoPassword = "MeoTDC@2026";
 const demoStorageEvent = "meotdc-demo-storage-updated";
 const maxIntegrityStrikes = 3;

@@ -9,6 +9,7 @@ export class ObjectStorageService implements OnModuleInit, OnModuleDestroy {
   get enabled() { return Boolean(this.client && this.bucket); }
 
   async onModuleInit() {
+    if (process.env.CLOUDFLARE_WORKERS === "true") return;
     const endpoint = process.env.S3_ENDPOINT?.trim();
     if (process.env.NODE_ENV !== "production" && process.env.S3_ENABLED !== "true") return;
     if (!this.bucket) {
@@ -61,5 +62,5 @@ export class ObjectStorageService implements OnModuleInit, OnModuleDestroy {
     if (this.client) await this.client.send(new DeleteObjectCommand({ Bucket: this.bucket, Key: key }));
   }
 
-  health() { return this.enabled ? "s3-compatible" : "local-volume"; }
+  health() { return this.enabled ? "s3-compatible" : process.env.CLOUDFLARE_WORKERS === "true" ? "not-configured-cloudflare" : "local-volume"; }
 }

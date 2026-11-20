@@ -2,6 +2,7 @@ node_modules/
 **/node_modules/
 .next/
 **/.next/
+apps/web/out/
 .next-codex-verify/
 **/.next-codex-verify/
 dist/
@@ -15,6 +16,7 @@ dist/
 !**/.env.example
 .pnpm-store/
 .npm-cache/
+.wrangler/
 coverage/
 apps/api/data/
 backups/

@@ -3,10 +3,12 @@ import { constants, createHash, createPublicKey, randomBytes, randomUUID, scrypt
 import { readFileSync } from "node:fs";
 import { mkdir, readFile, readdir, writeFile, unlink } from "node:fs/promises";
 import { extname, join, resolve } from "node:path";
-import { BadRequestException, Body, CanActivate, Controller, ExecutionContext, ForbiddenException, Get, Headers, HttpException, Injectable, Module, NotFoundException, Param, Post, Req, Res, ServiceUnavailableException, StreamableFile, UnauthorizedException, UploadedFile, UseGuards, UseInterceptors } from "@nestjs/common";
+import { BadRequestException, Body, CanActivate, Controller, ExecutionContext, ForbiddenException, Get, Headers, HttpException, Inject, Injectable, Module, NotFoundException, Param, Post, Req, Res, ServiceUnavailableException, StreamableFile, UnauthorizedException, UploadedFile, UseGuards, UseInterceptors } from "@nestjs/common";
 import { FileInterceptor } from "@nestjs/platform-express";
 import { NestFactory } from "@nestjs/core";
 import { demoAccounts, demoPassword, getMajorCatalog, majors, type MeoUser } from "./catalog";
+import { CloudflareDatabaseService } from "./cloudflare-database.service";
+import { hasCloudflareDatabase } from "./cloudflare-runtime";
 import { ExamRuntimeService } from "./exam-runtime.service";
 import { DatabaseService, type LearningAssignmentRecord, type LearningCourseRecord, type LearningSubmissionRecord, type PersistedRosterAccount, type PersistedSubmissionFile } from "./database.service";
 import { ObjectStorageService } from "./object-storage.service";
@@ -29,7 +31,11 @@ function loadPrivateEnvironment() {
   }
 }
 
-loadPrivateEnvironment();
+if (process.env.CLOUDFLARE_WORKERS !== "true") loadPrivateEnvironment();
+
+const isCloudflareWorker = () => process.env.CLOUDFLARE_WORKERS === "true" || hasCloudflareDatabase();
+const isCloudflareDemo = () => isCloudflareWorker() && process.env.MEOTDC_DEMO_MODE === "true";
+const enforceProductionAccessControls = () => process.env.NODE_ENV === "production" && !isCloudflareDemo();
 
 function productionConfigurationError(message: string): never {
   throw new Error(`Cấu hình production chưa an toàn: ${message}`);
@@ -38,18 +44,24 @@ function productionConfigurationError(message: string): never {
 function validateProductionConfiguration() {
   if (process.env.NODE_ENV !== "production") return;
 
-  const clientId = process.env.GOOGLE_CLIENT_ID?.trim() || "";
-  if (!clientId.endsWith(".apps.googleusercontent.com") || clientId.includes("YOUR_")) productionConfigurationError("hãy đặt GOOGLE_CLIENT_ID thật.");
-  const adminEmail = process.env.MEOTDC_ADMIN_EMAIL?.trim() || "";
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(adminEmail) || adminEmail.includes("YOUR_")) productionConfigurationError("hãy đặt MEOTDC_ADMIN_EMAIL thật của quản trị viên.");
+  if (!isCloudflareDemo()) {
+    const clientId = process.env.GOOGLE_CLIENT_ID?.trim() || "";
+    if (!clientId.endsWith(".apps.googleusercontent.com") || clientId.includes("YOUR_")) productionConfigurationError("hãy đặt GOOGLE_CLIENT_ID thật.");
+    const adminEmail = process.env.MEOTDC_ADMIN_EMAIL?.trim() || "";
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(adminEmail) || adminEmail.includes("YOUR_")) productionConfigurationError("hãy đặt MEOTDC_ADMIN_EMAIL thật của quản trị viên.");
+  }
 
-  const databaseUrl = process.env.DATABASE_URL?.trim() || "";
-  let databasePassword = "";
-  try { databasePassword = new URL(databaseUrl).password; } catch { productionConfigurationError("DATABASE_URL không hợp lệ."); }
-  if (decodeURIComponent(databasePassword).length < 24 || /^(replace|change|your|example|demo|meotdc|password)/i.test(decodeURIComponent(databasePassword))) productionConfigurationError("mật khẩu PostgreSQL phải là secret riêng dài ít nhất 24 ký tự.");
-  const objectSecret = process.env.S3_SECRET_KEY?.trim() || "";
-  if (objectSecret.length < 24 || /^(replace|change|your|example|demo|meotdc|password)/i.test(objectSecret)) productionConfigurationError("S3_SECRET_KEY phải là secret riêng dài ít nhất 24 ký tự.");
-  if (process.env.FILE_SCAN_REQUIRED !== "true" || !process.env.CLAMAV_HOST?.trim()) productionConfigurationError("cần FILE_SCAN_REQUIRED=true và CLAMAV_HOST.");
+  if (isCloudflareWorker()) {
+    if (!hasCloudflareDatabase()) productionConfigurationError("hãy gắn binding D1 tên DB cho Cloudflare Worker.");
+  } else {
+    const databaseUrl = process.env.DATABASE_URL?.trim() || "";
+    let databasePassword = "";
+    try { databasePassword = new URL(databaseUrl).password; } catch { productionConfigurationError("DATABASE_URL không hợp lệ."); }
+    if (decodeURIComponent(databasePassword).length < 24 || /^(replace|change|your|example|demo|meotdc|password)/i.test(decodeURIComponent(databasePassword))) productionConfigurationError("mật khẩu PostgreSQL phải là secret riêng dài ít nhất 24 ký tự.");
+    const objectSecret = process.env.S3_SECRET_KEY?.trim() || "";
+    if (objectSecret.length < 24 || /^(replace|change|your|example|demo|meotdc|password)/i.test(objectSecret)) productionConfigurationError("S3_SECRET_KEY phải là secret riêng dài ít nhất 24 ký tự.");
+    if (process.env.FILE_SCAN_REQUIRED !== "true" || !process.env.CLAMAV_HOST?.trim()) productionConfigurationError("cần FILE_SCAN_REQUIRED=true và CLAMAV_HOST.");
+  }
 
   const domains = (process.env.MEOTDC_DOMAINS || process.env.MEOTDC_DOMAIN || "localhost").split(",").map((value) => value.trim()).filter(Boolean);
   if (!domains.length) productionConfigurationError("hãy khai báo MEOTDC_DOMAINS.");
@@ -242,7 +254,7 @@ async function requireInstitutionSession(request: RequestLike, database: Databas
 
 @Injectable()
 class StudentSubmissionUploadGuard implements CanActivate {
-  constructor(private readonly database: DatabaseService) {}
+  constructor(@Inject(DatabaseService) private readonly database: DatabaseService) {}
 
   async canActivate(context: ExecutionContext) {
     await requireStudentSession(context.switchToHttp().getRequest<RequestLike>(), this.database);
@@ -261,7 +273,7 @@ class AppController {
   private readonly learningSubmissions = new Map<string, LearningSubmissionRecord>();
   private submissionFilesReady: Promise<void> | null = null;
 
-  constructor(private readonly examRuntime: ExamRuntimeService, private readonly database: DatabaseService, private readonly objectStorage: ObjectStorageService, private readonly fileScanner: FileScannerService) {}
+  constructor(private readonly examRuntime: ExamRuntimeService, @Inject(DatabaseService) private readonly database: DatabaseService, private readonly objectStorage: ObjectStorageService, private readonly fileScanner: FileScannerService) {}
 
   private getSubmissionDirectory() { return resolve(process.env.MEOTDC_UPLOADS_DIR || join(process.cwd(), "data", "assignment-submissions")); }
 
@@ -278,7 +290,7 @@ class AppController {
   }
 
   private teacherHasClassAccess(user: MeoUser, className: string) {
-    if (process.env.NODE_ENV !== "production" || user.role !== "teacher") return true;
+    if (!enforceProductionAccessControls() || user.role !== "teacher") return true;
     const email = user.email?.trim().toLowerCase();
     if (!email || !className.trim()) return false;
     return (process.env.MEOTDC_TEACHER_CLASS_ASSIGNMENTS || "").split(";").some((entry) => {
@@ -294,14 +306,14 @@ class AppController {
 
   private async visibleExams(user: MeoUser) {
     const exams = await this.examRuntime.listExams(user);
-    return user.role === "teacher" && process.env.NODE_ENV === "production"
+    return user.role === "teacher" && enforceProductionAccessControls()
       ? exams.filter((exam) => this.teacherHasClassAccess(user, exam.className || ""))
       : exams;
   }
 
   private async visibleExamAttempts(user: MeoUser) {
     const attempts = await this.examRuntime.listAttempts(user);
-    if (user.role !== "teacher" || process.env.NODE_ENV !== "production") return attempts;
+    if (user.role !== "teacher" || !enforceProductionAccessControls()) return attempts;
     const examIds = new Set((await this.visibleExams(user)).map((exam) => exam.id));
     return attempts.filter((attempt) => examIds.has(attempt.examId));
   }
@@ -409,7 +421,7 @@ class AppController {
     const points = Number(body.points);
     if (!title || title.length > 180 || !course || course.length > 100 || !className || className.length > 80 || description.length > 10_000) throw new BadRequestException("Tên, học phần, lớp hoặc mô tả bài tập chưa hợp lệ.");
     if (!Number.isFinite(dueAt.getTime()) || !Number.isFinite(points) || points <= 0 || points > 1000) throw new BadRequestException("Hạn nộp hoặc thang điểm chưa hợp lệ.");
-    if (process.env.NODE_ENV === "production") {
+    if (enforceProductionAccessControls()) {
       const roster = this.database.enabled ? await this.database.listRosterAccounts() : [...this.rosterAccounts.values()];
       if (!roster.some((account) => account.user.className === className)) throw new BadRequestException("Lớp chưa có trong roster của trường.");
     }
@@ -502,7 +514,7 @@ class AppController {
     const user = await requireStudentSession(request, this.database);
     const assignmentId = typeof body?.assignmentId === "string" ? body.assignmentId.trim() : "";
     if (!/^[a-z0-9-]{1,160}$/i.test(assignmentId)) throw new BadRequestException("Mã bài tập không hợp lệ.");
-    if (process.env.NODE_ENV === "production") {
+    if (enforceProductionAccessControls()) {
       const assignment = await this.getLearningAssignment(assignmentId);
       if (!assignment || !assignment.published || assignment.className !== user.className) throw new ForbiddenException("Bài tập không được giao cho lớp của bạn.");
       if (Date.parse(assignment.dueAt) < Date.now()) throw new ForbiddenException("Đã hết hạn nộp bài.");
@@ -582,7 +594,7 @@ class AppController {
     for (const course of courses) ensure(course.className)?.courses.add(course.title);
     for (const assignment of assignments) ensure(assignment.className)?.courses.add(assignment.course);
     for (const exam of exams) ensure(exam.className || "")?.courses.add(exam.course);
-    if (user.role === "teacher" && process.env.NODE_ENV === "production") {
+    if (user.role === "teacher" && enforceProductionAccessControls()) {
       const email = user.email?.trim().toLowerCase() || "";
       for (const entry of (process.env.MEOTDC_TEACHER_CLASS_ASSIGNMENTS || "").split(";")) {
         const separator = entry.indexOf("=");
@@ -615,7 +627,7 @@ class AppController {
 
   @Get("auth/demo-accounts")
   listDemoAccounts() {
-    if (process.env.NODE_ENV === "production") return [];
+    if (enforceProductionAccessControls()) return [];
     return demoAccounts.map(({ id, username, fullName, role, major }) => ({ id, username, fullName, role, major }));
   }
 
@@ -719,7 +731,7 @@ class AppController {
     const rosterAccount = this.database.enabled ? await this.database.getRosterAccount(username) : this.rosterAccounts.get(username);
     let user: MeoUser;
     if (account) {
-      if (process.env.NODE_ENV === "production") throw new UnauthorizedException("Tài khoản dùng thử đã tắt ở môi trường này.");
+      if (enforceProductionAccessControls()) throw new UnauthorizedException("Tài khoản dùng thử đã tắt ở môi trường này.");
       if (password !== demoPassword) {
         await recordAuthFailure(failureKey, this.database);
         throw new UnauthorizedException("Tên đăng nhập hoặc mật khẩu chưa đúng.");
@@ -774,11 +786,11 @@ class AppController {
     const schoolEmails = new Set((process.env.MEOTDC_SCHOOL_EMAILS || "").split(",").map((email) => email.trim().toLowerCase()).filter(Boolean));
     const isTeacher = teacherEmails.has(identity.email);
     const isSchool = schoolEmails.has(identity.email);
-    if (process.env.NODE_ENV === "production" && !configuredAdminEmail && !teacherEmails.size && !schoolEmails.size) throw new ServiceUnavailableException("Máy chủ chưa cấu hình danh sách email được phép đăng nhập Google.");
+    if (enforceProductionAccessControls() && !configuredAdminEmail && !teacherEmails.size && !schoolEmails.size) throw new ServiceUnavailableException("Máy chủ chưa cấu hình danh sách email được phép đăng nhập Google.");
     const linkedRosterAccount = this.database.enabled
       ? await this.database.getRosterAccountByEmail(identity.email)
       : [...this.rosterAccounts.values()].find(({ user }) => user.email?.toLowerCase() === identity.email);
-    if (process.env.NODE_ENV === "production" && !isAdmin && !isTeacher && !isSchool && !linkedRosterAccount) throw new UnauthorizedException("Email này chưa được nhà trường cấp quyền hoặc liên kết roster.");
+    if (enforceProductionAccessControls() && !isAdmin && !isTeacher && !isSchool && !linkedRosterAccount) throw new UnauthorizedException("Email này chưa được nhà trường cấp quyền hoặc liên kết roster.");
     const user: MeoUser = isAdmin ? {
       id: "system-admin",
       username: "admin",
@@ -923,7 +935,7 @@ class AppController {
   async liveExamAttempts(@Req() request: RequestLike) {
     const user = await requireAuthenticatedSession(request, this.database);
     const attempts = await this.examRuntime.liveAttempts(user);
-    return user.role === "teacher" && process.env.NODE_ENV === "production"
+    return user.role === "teacher" && enforceProductionAccessControls()
       ? attempts.filter((attempt) => this.teacherHasClassAccess(user, attempt.className || ""))
       : attempts;
   }
@@ -977,17 +989,18 @@ class AppController {
   }
 }
 
-@Module({ controllers: [AppController], providers: [DatabaseService, ObjectStorageService, FileScannerService, ExamRuntimeService, StudentSubmissionUploadGuard] })
+@Module({ controllers: [AppController], providers: [{ provide: DatabaseService, useClass: hasCloudflareDatabase() ? CloudflareDatabaseService : DatabaseService }, ObjectStorageService, FileScannerService, ExamRuntimeService, StudentSubmissionUploadGuard] })
 class AppModule {}
 
-async function bootstrap() {
+async function createApplication() {
   validateProductionConfiguration();
   const app = await NestFactory.create(AppModule);
+  app.getHttpAdapter().getInstance().disable("x-powered-by");
   const trustProxyHops = Number(process.env.TRUST_PROXY_HOPS || 0);
   if (Number.isInteger(trustProxyHops) && trustProxyHops > 0) app.getHttpAdapter().getInstance().set("trust proxy", trustProxyHops);
   const allowedOrigins = (process.env.MEOTDC_WEB_ORIGINS || process.env.MEOTDC_WEB_ORIGIN || "http://localhost:3000").split(",").map((origin) => origin.trim()).filter(Boolean);
   app.enableCors({ origin: allowedOrigins, credentials: true });
-  app.use((request: { method: string; headers: { origin?: string; cookie?: string } }, response: { setHeader(name: string, value: string): void; status(code: number): { json(body: unknown): void } }, next: () => void) => {
+  app.use((request: { method: string; headers: { origin?: string; cookie?: string; host?: string } }, response: { setHeader(name: string, value: string): void; status(code: number): { json(body: unknown): void } }, next: () => void) => {
     response.setHeader("X-Content-Type-Options", "nosniff");
     response.setHeader("X-Frame-Options", "DENY");
     response.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
@@ -998,16 +1011,28 @@ async function bootstrap() {
     const origin = request.headers.origin;
     const changesState = ["POST", "PUT", "PATCH", "DELETE"].includes(request.method);
     const hasSessionCookie = request.headers.cookie?.split(";").some((part) => part.trim().startsWith(`${sessionCookieName}=`));
-    if (changesState && ((origin && !allowedOrigins.includes(origin)) || (!origin && hasSessionCookie))) {
+    const sameOriginCloudflareRequest = isCloudflareWorker() && Boolean(origin && request.headers.host && origin === `https://${request.headers.host}`);
+    if (changesState && ((origin && !allowedOrigins.includes(origin) && !sameOriginCloudflareRequest) || (!origin && hasSessionCookie))) {
       response.status(403).json({ statusCode: 403, message: "Nguồn yêu cầu không được phép." });
       return;
     }
     next();
   });
+  return app;
+}
+
+export async function startCloudflareApiServer() {
+  const app = await createApplication();
+  await app.listen(8787, "127.0.0.1");
+  return app.getHttpServer();
+}
+
+async function bootstrap() {
+  const app = await createApplication();
   const port = Number(process.env.API_PORT || 4000);
   const host = process.env.API_HOST || "127.0.0.1";
   await app.listen(port, host);
   console.log(`MeoTDC API đang chạy tại http://localhost:${port}/api/v1/health`);
 }
 
-void bootstrap();
+if (process.env.CLOUDFLARE_WORKERS !== "true") void bootstrap();
