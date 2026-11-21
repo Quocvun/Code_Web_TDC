@@ -26,6 +26,7 @@ async function hmac(key: ArrayBuffer | Uint8Array, value: string) {
 export class ObjectStorageService implements OnModuleInit, OnModuleDestroy {
   private client: S3Client | null = null;
   private cloudflareS3: CloudflareS3Config | null = null;
+  private cloudflareStorageHealthy: boolean | null = null;
   private readonly bucket = process.env.S3_BUCKET?.trim() || "";
 
   get enabled() { return Boolean((this.client || this.cloudflareS3) && this.bucket); }
@@ -43,16 +44,21 @@ export class ObjectStorageService implements OnModuleInit, OnModuleDestroy {
     }
     if (cloudflare) {
       this.cloudflareS3 = { endpoint: endpoint!, region: process.env.AWS_REGION || "us-east-1", accessKeyId: process.env.S3_ACCESS_KEY!, secretAccessKey: process.env.S3_SECRET_KEY! };
-      for (let attempt = 1; attempt <= 30; attempt += 1) {
-        const response = await this.cloudflareS3Request("HEAD");
-        if (response.ok) return;
+      try {
+        const response = await this.cloudflareS3Request("HEAD", undefined, undefined, undefined, 5000);
         if (response.status === 404) {
-          const created = await this.cloudflareS3Request("PUT");
-          if (created.ok || created.status === 409) return;
-          throw new Error(`S3-compatible bucket creation failed: ${created.status}`);
+          const created = await this.cloudflareS3Request("PUT", undefined, undefined, undefined, 5000);
+          if (created.ok || created.status === 409) {
+            this.cloudflareStorageHealthy = true;
+            return;
+          }
+          console.error(`S3-compatible bucket creation failed: ${created.status}; API startup continues with file storage unavailable.`);
+          return;
         }
-        if (attempt === 30) throw new Error(`S3-compatible bucket check failed: ${response.status}`);
-        await new Promise((resolve) => setTimeout(resolve, 1000));
+        if (!response.ok) console.error(`S3-compatible bucket check failed: ${response.status}; API startup continues with file storage unavailable.`);
+      } catch {
+        this.cloudflareStorageHealthy = false;
+        console.error("S3-compatible bucket check failed; API startup continues with file storage unavailable.");
       }
       return;
     }
@@ -117,9 +123,12 @@ export class ObjectStorageService implements OnModuleInit, OnModuleDestroy {
     if (this.client) await this.client.send(new DeleteObjectCommand({ Bucket: this.bucket, Key: key }));
   }
 
-  health() { return this.enabled ? "s3-compatible" : process.env.CLOUDFLARE_WORKERS === "true" ? "not-configured-cloudflare" : "local-volume"; }
+  health() {
+    if (this.enabled && process.env.CLOUDFLARE_WORKERS === "true" && this.cloudflareStorageHealthy === false) return "s3-compatible-unavailable";
+    return this.enabled ? "s3-compatible" : process.env.CLOUDFLARE_WORKERS === "true" ? "not-configured-cloudflare" : "local-volume";
+  }
 
-  private async cloudflareS3Request(method: string, key?: string, body?: Buffer, contentType?: string) {
+  private async cloudflareS3Request(method: string, key?: string, body?: Buffer, contentType?: string, timeoutMs?: number) {
     const config = this.cloudflareS3;
     if (!config) throw new Error("Cloudflare S3 storage is not configured.");
     const endpoint = new URL(config.endpoint);
@@ -152,6 +161,10 @@ export class ObjectStorageService implements OnModuleInit, OnModuleDestroy {
       authorization: `AWS4-HMAC-SHA256 Credential=${config.accessKeyId}/${scope}, SignedHeaders=${signedHeaderNames}, Signature=${signature}`,
     });
     if (contentType) headers.set("content-type", contentType);
-    return fetch(url, { method, headers, body: body ? arrayBuffer(body) : undefined });
+    const response = await fetch(url, { method, headers, body: body ? arrayBuffer(body) : undefined, signal: timeoutMs ? AbortSignal.timeout(timeoutMs) : undefined });
+    if (method === "HEAD") this.cloudflareStorageHealthy = response.ok;
+    else if (response.ok) this.cloudflareStorageHealthy = true;
+    else if (response.status >= 500) this.cloudflareStorageHealthy = false;
+    return response;
   }
 }
